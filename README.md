@@ -29,11 +29,29 @@ SaneProcess enforces discipline through:
 ## What's Included
 
 ```
-├── docs/SaneProcess.md     # Complete SOP documentation (1,100+ lines)
-├── scripts/init.sh         # One-command project setup
-├── scripts/mac_context.rb  # Mac development knowledge injection (370+ lines)
-└── Hooks & configs         # Circuit breaker, memory compactor, lefthook
+├── docs/SaneProcess.md      # Complete SOP documentation (1,100+ lines)
+├── scripts/init.sh          # One-command project setup
+├── scripts/mac_context.rb   # Mac development knowledge injection (757 lines)
+├── scripts/skill_loader.rb  # Load/unload domain-specific knowledge
+├── skills/                  # Modular expert knowledge
+│   ├── swift-concurrency.md    # Actors, @MainActor, Swift 6.2
+│   ├── swiftui-performance.md  # View anti-patterns, optimization
+│   └── crash-analysis.md       # Reading crash reports, symbolication
+└── Hooks & configs          # Circuit breaker, memory compactor, lefthook
 ```
+
+### Skills System
+
+Load only what you need for your current task:
+
+```bash
+ruby scripts/skill_loader.rb list                    # See available skills
+ruby scripts/skill_loader.rb load swift-concurrency  # Load a skill
+ruby scripts/skill_loader.rb status                  # See what's loaded
+ruby scripts/skill_loader.rb unload --all            # Clear all skills
+```
+
+Skills add domain-specific knowledge to your context. Base context is 757 lines; with all skills loaded: ~1,350 lines.
 
 ## The "Supervisor" Advantage
 
@@ -41,7 +59,7 @@ SaneProcess isn't just rules - it's a **Mac App Factory** layer:
 
 | Feature | What It Does |
 |---------|--------------|
-| **Mac Context Injection** | 370 lines of Info.plist, entitlements, sandboxing, notarization patterns |
+| **Mac Context Injection** | 757 lines of Info.plist, entitlements, sandboxing, WWDC 2025 APIs, crash analysis |
 | **Circuit Breaker** | Stops Claude after 3 same errors (prevents $20 token burn) |
 | **XcodeGen Integration** | Never let Claude touch .xcodeproj directly |
 | **Build Loop Handler** | Captures errors, strips noise, feeds back only essentials |

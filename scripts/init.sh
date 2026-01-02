@@ -129,6 +129,19 @@ echo "Creating Claude Code hooks configuration..."
 
 cat > .claude/settings.json << 'EOF'
 {
+  "permissions": {
+    "allow": [
+      "mcp__memory__*",
+      "mcp__apple-docs__*",
+      "mcp__context7__*",
+      "mcp__XcodeBuildMCP__discover_projs",
+      "mcp__XcodeBuildMCP__list_schemes",
+      "mcp__XcodeBuildMCP__show_build_settings",
+      "mcp__XcodeBuildMCP__doctor",
+      "mcp__XcodeBuildMCP__get_app_bundle_id",
+      "mcp__XcodeBuildMCP__get_mac_bundle_id"
+    ]
+  },
   "hooks": {
     "SessionStart": [
       {
@@ -141,6 +154,11 @@ cat > .claude/settings.json << 'EOF'
         "type": "command",
         "command": "./Scripts/hooks/circuit_breaker.rb",
         "matchTools": ["Edit", "Bash", "Write"]
+      },
+      {
+        "type": "command",
+        "command": "./Scripts/hooks/path_rules.rb",
+        "matchTools": ["Edit", "Write"]
       }
     ],
     "SessionEnd": [
@@ -161,7 +179,10 @@ echo "   ✅ .claude/settings.json"
 
 echo "Creating MCP server configuration..."
 
-cat > .mcp.json << 'EOF'
+# Add XcodeBuildMCP for Xcode projects, with dangerous features disabled
+case "$PROJECT_TYPE" in
+    swift-package|xcodegen|xcode)
+        cat > .mcp.json << 'EOF'
 {
   "mcpServers": {
     "apple-docs": {
@@ -175,10 +196,36 @@ cat > .mcp.json << 'EOF'
     "context7": {
       "command": "npx",
       "args": ["-y", "@upstash/context7-mcp@latest"]
+    },
+    "XcodeBuildMCP": {
+      "command": "npx",
+      "args": ["-y", "xcodebuildmcp@latest"],
+      "env": {
+        "XCODEBUILDMCP_ENABLED_WORKFLOWS": "project-discovery,doctor",
+        "XCODEBUILDMCP_SENTRY_DISABLED": "true"
+      }
     }
   }
 }
 EOF
+        ;;
+    *)
+        cat > .mcp.json << 'EOF'
+{
+  "mcpServers": {
+    "memory": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory", ".claude/memory.json"]
+    },
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp@latest"]
+    }
+  }
+}
+EOF
+        ;;
+esac
 
 echo "   ✅ .mcp.json"
 
@@ -415,6 +462,105 @@ chmod +x Scripts/hooks/memory_compactor.rb
 echo "   ✅ Scripts/hooks/memory_compactor.rb"
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# CREATE PATH RULES HOOK (Swift projects only)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+case "$PROJECT_TYPE" in
+    swift-package|xcodegen|xcode)
+        echo "Creating path rules hook..."
+
+        mkdir -p .claude/rules
+
+        cat > Scripts/hooks/path_rules.rb << 'RUBY'
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Path Rules Hook - Shows context-specific rules when editing files
+
+require 'json'
+
+RULES_DIR = File.join(Dir.pwd, '.claude', 'rules')
+
+PATTERN_RULES = {
+  %w[**/Tests/**/*.swift **/*Tests.swift] => 'tests.md',
+  %w[**/Views/**/*.swift **/*View.swift] => 'views.md',
+  %w[**/Services/**/*.swift **/*Manager.swift] => 'services.md'
+}.freeze
+
+def match_patterns(file_path, patterns)
+  patterns.any? { |p| File.fnmatch(p, file_path, File::FNM_PATHNAME | File::FNM_EXTGLOB) }
+end
+
+def find_rules(file_path)
+  PATTERN_RULES.filter_map do |patterns, rule_file|
+    rule_path = File.join(RULES_DIR, rule_file)
+    rule_path if match_patterns(file_path, patterns) && File.exist?(rule_path)
+  end
+end
+
+def extract_requirements(rule_path)
+  content = File.read(rule_path)
+  title = content.lines.find { |l| l.start_with?('# ') }&.strip&.sub(/^# /, '') || 'Rules'
+  reqs = content.scan(/\d+\.\s+\*\*(.+?)\*\*/).flatten
+  { title: title, reqs: reqs }
+end
+
+input = JSON.parse($stdin.read) rescue {}
+return unless %w[Edit Write].include?(input['tool_name'])
+
+file_path = input.dig('tool_input', 'file_path') || ''
+return if file_path.empty? || !file_path.end_with?('.swift')
+
+find_rules(file_path).each do |rule_path|
+  info = extract_requirements(rule_path)
+  next if info[:reqs].empty?
+  warn "\n📋 #{info[:title]}"
+  info[:reqs].each { |r| warn "   • #{r}" }
+end
+RUBY
+
+        chmod +x Scripts/hooks/path_rules.rb
+        echo "   ✅ Scripts/hooks/path_rules.rb"
+
+        # Create example rule files
+        cat > .claude/rules/tests.md << 'MD'
+# Test File Rules
+
+## Requirements
+
+1. **Use Swift Testing** - `#expect()` not `XCTAssert`
+2. **No tautologies** - `#expect(true)` is useless
+3. **Test behavior, not implementation**
+4. **One assertion focus per test**
+MD
+
+        cat > .claude/rules/views.md << 'MD'
+# SwiftUI View Rules
+
+## Requirements
+
+1. **Extract if body > 50 lines**
+2. **No business logic in views**
+3. **Use @Observable** - Not @StateObject
+4. **Computed properties for derived state**
+MD
+
+        cat > .claude/rules/services.md << 'MD'
+# Service Layer Rules
+
+## Requirements
+
+1. **Actor for shared mutable state**
+2. **Protocol-first design**
+3. **Dependency injection** - No singletons
+4. **Typed errors** - Enum, not strings
+MD
+
+        echo "   ✅ .claude/rules/ (tests, views, services)"
+        ;;
+esac
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # CREATE LEFTHOOK.YML
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -585,8 +731,8 @@ echo -e "${GREEN}║${NC}                    ${GREEN}Setup Complete!${NC}       
 echo -e "${GREEN}╚═══════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo "Created:"
-echo "   • .claude/settings.json    - Claude Code hooks"
-echo "   • .mcp.json                - MCP servers (apple-docs, memory, context7)"
+echo "   • .claude/settings.json    - Claude Code hooks + MCP permission lockdown"
+echo "   • .mcp.json                - MCP servers (only safe, read-only tools enabled)"
 echo "   • Scripts/build.rb         - Build automation"
 echo "   • Scripts/hooks/           - SOP enforcement hooks"
 echo "   • lefthook.yml             - Git pre-commit/pre-push hooks"
