@@ -66,13 +66,28 @@ SaneProcess isn't just rules - it's a **Mac App Factory** layer:
 
 ---
 
+## The Sane* Family
+
+All tools share the **Sane** prefix so you know when you're using our battle-tested components:
+
+| Tool | What It Does |
+|------|--------------|
+| **SaneProcess** | The methodology + product |
+| **SaneMaster** | CLI tool for build, verify, launch, logs |
+| **SaneLoop** | Iteration loop with enforced exit conditions |
+| **SaneSkills** | Load/unload domain knowledge on demand |
+| **SaneRules** | Path-specific guidance (Tests/, Views/, Services/) |
+| **SaneBreaker** | Circuit breaker - stops after repeated failures |
+
+Each component is designed to work together. When you see "Sane*", you know it's enforcing discipline.
+
+---
+
 ## Pricing
 
-| Tier | Price | Includes |
-|------|-------|----------|
-| **Personal** | $29 | License for 1 developer |
-| **Team** | $99 | License for up to 5 developers |
-| **Enterprise** | Contact | Unlimited + custom hooks + support |
+**$29 one-time** - Lifetime upgrades included.
+
+No subscriptions. No recurring fees. Pay once, get all future updates.
 
 **To purchase:** [Open an issue](https://github.com/stephanjoseph/SaneProcess/issues/new) with subject "License Request"
 

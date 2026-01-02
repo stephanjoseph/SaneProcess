@@ -94,7 +94,7 @@ bundle install
 # Claude Code plugins
 claude plugin install swift-lsp@claude-plugins-official
 claude plugin install code-review@claude-plugins-official
-claude plugin install ralph-wiggum@claude-plugins-official
+claude plugin install sane-loop@claude-plugins-official
 ```
 
 ## Step 2: Create Project Structure (3 min)
