@@ -1,0 +1,8 @@
+# macOS
+.DS_Store
+
+# Generated
+*.pdf
+
+# Local testing
+test-project/
