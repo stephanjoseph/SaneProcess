@@ -1,0 +1,353 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+#
+# SaneProcess QA Script
+# Automated product verification before release
+#
+# Usage: ruby scripts/qa.rb
+#
+# Checks:
+# - All hooks exist and have valid Ruby syntax
+# - init.sh downloads all hooks
+# - README matches actual hook count
+# - docs/SaneProcess.md matches rule count
+# - All URLs in docs are reachable
+# - All hooks use stdin pattern (not ENV vars)
+# - Hook tests pass
+#
+
+require 'net/http'
+require 'uri'
+require 'json'
+
+class SaneProcessQA
+  HOOKS_DIR = File.join(__dir__, 'hooks')
+  INIT_SCRIPT = File.join(__dir__, 'init.sh')
+  README = File.join(__dir__, '..', 'README.md')
+  SOP_DOC = File.join(__dir__, '..', 'docs', 'SaneProcess.md')
+  HOOKS_README = File.join(__dir__, 'hooks', 'README.md')
+
+  EXPECTED_HOOKS = %w[
+    circuit_breaker.rb
+    edit_validator.rb
+    failure_tracker.rb
+    test_quality_checker.rb
+    path_rules.rb
+    session_start.rb
+    audit_logger.rb
+    sop_mapper.rb
+    two_fix_reminder.rb
+    verify_reminder.rb
+    version_mismatch.rb
+  ].freeze
+
+  EXPECTED_RULE_COUNT = 13
+
+  def initialize
+    @errors = []
+    @warnings = []
+  end
+
+  def run
+    puts "═══════════════════════════════════════════════════════════════"
+    puts "                  SaneProcess QA Check"
+    puts "═══════════════════════════════════════════════════════════════"
+    puts
+
+    check_hooks_exist
+    check_hooks_syntax
+    check_hooks_use_stdin
+    check_init_script
+    check_readme_hook_count
+    check_sop_doc_rule_count
+    check_hooks_readme
+    check_urls
+    run_hook_tests
+
+    puts
+    puts "═══════════════════════════════════════════════════════════════"
+
+    if @errors.empty? && @warnings.empty?
+      puts "✅ All checks passed!"
+      exit 0
+    else
+      unless @warnings.empty?
+        puts "⚠️  Warnings (#{@warnings.count}):"
+        @warnings.each { |w| puts "   - #{w}" }
+        puts
+      end
+
+      unless @errors.empty?
+        puts "❌ Errors (#{@errors.count}):"
+        @errors.each { |e| puts "   - #{e}" }
+        puts
+        exit 1
+      end
+
+      exit 0
+    end
+  end
+
+  private
+
+  def check_hooks_exist
+    print "Checking hooks exist... "
+
+    missing = EXPECTED_HOOKS.reject do |hook|
+      File.exist?(File.join(HOOKS_DIR, hook))
+    end
+
+    if missing.empty?
+      puts "✅ #{EXPECTED_HOOKS.count} hooks present"
+    else
+      @errors << "Missing hooks: #{missing.join(', ')}"
+      puts "❌ Missing: #{missing.join(', ')}"
+    end
+  end
+
+  def check_hooks_syntax
+    print "Checking Ruby syntax... "
+
+    invalid = []
+    EXPECTED_HOOKS.each do |hook|
+      path = File.join(HOOKS_DIR, hook)
+      next unless File.exist?(path)
+
+      result = `ruby -c #{path} 2>&1`
+      invalid << hook unless $?.success?
+    end
+
+    if invalid.empty?
+      puts "✅ All hooks have valid syntax"
+    else
+      @errors << "Invalid syntax in: #{invalid.join(', ')}"
+      puts "❌ Invalid: #{invalid.join(', ')}"
+    end
+  end
+
+  def check_hooks_use_stdin
+    print "Checking hooks use stdin for input... "
+
+    uses_env_for_input = []
+    EXPECTED_HOOKS.each do |hook|
+      path = File.join(HOOKS_DIR, hook)
+      next unless File.exist?(path)
+
+      content = File.read(path)
+      # Check for deprecated patterns: ENV['CLAUDE_TOOL_INPUT'] or ENV['CLAUDE_TOOL_OUTPUT']
+      # These should use stdin instead. CLAUDE_PROJECT_DIR and CLAUDE_SESSION_ID are OK.
+      if content.match?(/ENV\[['"]CLAUDE_TOOL_INPUT/) ||
+         content.match?(/ENV\.fetch\(['"]CLAUDE_TOOL_INPUT/) ||
+         content.match?(/ENV\[['"]CLAUDE_TOOL_OUTPUT/) ||
+         content.match?(/ENV\.fetch\(['"]CLAUDE_TOOL_OUTPUT/)
+        uses_env_for_input << hook
+      end
+    end
+
+    if uses_env_for_input.empty?
+      puts "✅ All hooks use stdin"
+    else
+      @errors << "Hooks using ENV for tool input (should use stdin): #{uses_env_for_input.join(', ')}"
+      puts "❌ Using ENV for input: #{uses_env_for_input.join(', ')}"
+    end
+  end
+
+  def check_init_script
+    print "Checking init.sh... "
+
+    unless File.exist?(INIT_SCRIPT)
+      @errors << "init.sh not found"
+      puts "❌ Missing"
+      return
+    end
+
+    content = File.read(INIT_SCRIPT)
+
+    # Extract hooks from the HOOKS array in init.sh
+    hooks_match = content.match(/HOOKS=\(\s*([\s\S]*?)\s*\)/)
+    unless hooks_match
+      @errors << "init.sh: Cannot find HOOKS array"
+      puts "❌ HOOKS array not found"
+      return
+    end
+
+    # Parse the hooks list
+    init_hooks = hooks_match[1].scan(/"([^"]+)"/).flatten
+
+    missing = EXPECTED_HOOKS - init_hooks
+    extra = init_hooks - EXPECTED_HOOKS
+
+    if missing.empty? && extra.empty?
+      puts "✅ init.sh lists all #{EXPECTED_HOOKS.count} hooks"
+    else
+      @errors << "init.sh missing: #{missing.join(', ')}" unless missing.empty?
+      @warnings << "init.sh has extra: #{extra.join(', ')}" unless extra.empty?
+      puts "❌ Mismatch (missing: #{missing.count}, extra: #{extra.count})"
+    end
+  end
+
+  def check_readme_hook_count
+    print "Checking README.md hook count... "
+
+    unless File.exist?(README)
+      @warnings << "README.md not found"
+      puts "⚠️  Not found"
+      return
+    end
+
+    content = File.read(README)
+
+    # Look for patterns like "11 SOP enforcement hooks" or "11 production-ready hooks"
+    hook_counts = content.scan(/(\d+)\s+(?:SOP enforcement |production-ready )?hooks?/i).flatten.map(&:to_i)
+
+    if hook_counts.empty?
+      @warnings << "README.md: No hook count found"
+      puts "⚠️  No count found"
+      return
+    end
+
+    wrong_counts = hook_counts.reject { |c| c == EXPECTED_HOOKS.count }
+    if wrong_counts.empty?
+      puts "✅ Hook count correct (#{EXPECTED_HOOKS.count})"
+    else
+      @errors << "README.md says #{wrong_counts.first} hooks, should be #{EXPECTED_HOOKS.count}"
+      puts "❌ Says #{wrong_counts.first}, should be #{EXPECTED_HOOKS.count}"
+    end
+  end
+
+  def check_sop_doc_rule_count
+    print "Checking docs/SaneProcess.md rule count... "
+
+    unless File.exist?(SOP_DOC)
+      @warnings << "docs/SaneProcess.md not found"
+      puts "⚠️  Not found"
+      return
+    end
+
+    content = File.read(SOP_DOC)
+
+    # Look for "13 Golden Rules" or "11 Golden Rules"
+    rule_counts = content.scan(/(\d+)\s+Golden Rules?/i).flatten.map(&:to_i)
+
+    if rule_counts.empty?
+      @warnings << "docs/SaneProcess.md: No rule count found"
+      puts "⚠️  No count found"
+      return
+    end
+
+    wrong_counts = rule_counts.reject { |c| c == EXPECTED_RULE_COUNT }
+    if wrong_counts.empty?
+      puts "✅ Rule count correct (#{EXPECTED_RULE_COUNT})"
+    else
+      @errors << "SaneProcess.md says #{wrong_counts.first} rules, should be #{EXPECTED_RULE_COUNT}"
+      puts "❌ Says #{wrong_counts.first}, should be #{EXPECTED_RULE_COUNT}"
+    end
+  end
+
+  def check_hooks_readme
+    print "Checking hooks/README.md... "
+
+    unless File.exist?(HOOKS_README)
+      @warnings << "hooks/README.md not found"
+      puts "⚠️  Not found"
+      return
+    end
+
+    content = File.read(HOOKS_README)
+
+    # Check each expected hook is mentioned
+    missing = EXPECTED_HOOKS.reject do |hook|
+      content.include?(hook)
+    end
+
+    if missing.empty?
+      puts "✅ All hooks documented"
+    else
+      @errors << "hooks/README.md missing: #{missing.join(', ')}"
+      puts "❌ Missing docs: #{missing.join(', ')}"
+    end
+  end
+
+  def check_urls
+    print "Checking URLs in docs... "
+
+    urls_to_check = []
+
+    # Collect URLs from key files
+    [README, SOP_DOC, File.join(__dir__, '..', '.claude', 'SOP_CONTEXT.md')].each do |file|
+      next unless File.exist?(file)
+
+      content = File.read(file)
+      # Extract URLs
+      content.scan(%r{https?://[^\s\)\]"']+}).each do |url|
+        # Skip localhost, example.com, placeholder URLs
+        next if url.include?('localhost')
+        next if url.include?('example.com')
+        next if url.include?('XXXX')
+        next if url.include?('<')
+
+        urls_to_check << { url: url.gsub(/[,\.]$/, ''), file: File.basename(file) }
+      end
+    end
+
+    if urls_to_check.empty?
+      puts "⚠️  No URLs found"
+      return
+    end
+
+    bad_urls = []
+    urls_to_check.uniq { |u| u[:url] }.each do |entry|
+      begin
+        uri = URI.parse(entry[:url])
+        http = Net::HTTP.new(uri.host, uri.port)
+        http.use_ssl = uri.scheme == 'https'
+        http.open_timeout = 5
+        http.read_timeout = 5
+
+        response = http.head(uri.request_uri)
+        # Accept 2xx, 3xx, 404 for GitHub raw URLs that may not exist yet
+        unless response.code.to_i < 400 || (response.code.to_i == 404 && entry[:url].include?('raw.githubusercontent'))
+          bad_urls << "#{entry[:url]} (#{response.code}) in #{entry[:file]}"
+        end
+      rescue StandardError => e
+        bad_urls << "#{entry[:url]} (#{e.class.name}) in #{entry[:file]}"
+      end
+    end
+
+    if bad_urls.empty?
+      puts "✅ #{urls_to_check.count} URLs reachable"
+    else
+      bad_urls.each { |u| @warnings << "Unreachable URL: #{u}" }
+      puts "⚠️  #{bad_urls.count} unreachable"
+    end
+  end
+
+  def run_hook_tests
+    print "Running hook tests... "
+
+    test_file = File.join(HOOKS_DIR, 'test', 'hook_test.rb')
+    unless File.exist?(test_file)
+      @warnings << "Hook tests not found at #{test_file}"
+      puts "⚠️  Tests not found"
+      return
+    end
+
+    result = `ruby #{test_file} 2>&1`
+    if $?.success?
+      # Extract test count from output
+      if result.match?(/(\d+) tests.*0 failures/)
+        puts "✅ All tests pass"
+      else
+        puts "✅ Tests pass"
+      end
+    else
+      @errors << "Hook tests failed"
+      puts "❌ Tests failed"
+      puts result.lines.last(5).join if result.lines.count > 0
+    end
+  end
+end
+
+# Run if executed directly
+SaneProcessQA.new.run if __FILE__ == $PROGRAM_NAME

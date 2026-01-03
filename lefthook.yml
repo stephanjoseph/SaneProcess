@@ -1,0 +1,22 @@
+# SaneProcess Git Hooks (via Lefthook)
+#
+# Install: lefthook install
+# Run manually: lefthook run pre-push
+#
+# https://github.com/evilmartians/lefthook
+
+pre-push:
+  commands:
+    qa:
+      run: ruby scripts/qa.rb
+      fail_text: "QA check failed. Fix issues before pushing."
+
+pre-commit:
+  commands:
+    hook-syntax:
+      glob: "scripts/hooks/*.rb"
+      run: |
+        for file in {staged_files}; do
+          ruby -c "$file" || exit 1
+        done
+      fail_text: "Ruby syntax error in hook files."
