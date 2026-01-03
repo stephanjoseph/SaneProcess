@@ -20,7 +20,7 @@ SaneProcess enforces discipline through:
 
 | Feature | What It Does |
 |---------|--------------|
-| **11 Golden Rules** | Memorable rules like "TWO STRIKES? INVESTIGATE" |
+| **13 Golden Rules** | Memorable rules like "TWO STRIKES? INVESTIGATE" |
 | **Circuit Breaker** | Auto-stops after 3 same errors or 5 total failures |
 | **Memory System** | Bug patterns persist across sessions |
 | **Compliance Loop** | Enforced task completion with verification |
@@ -29,15 +29,28 @@ SaneProcess enforces discipline through:
 ## What's Included
 
 ```
-├── docs/SaneProcess.md      # Complete SOP documentation (1,100+ lines)
-├── scripts/init.sh          # One-command project setup
-├── scripts/mac_context.rb   # Mac development knowledge injection (757 lines)
-├── scripts/skill_loader.rb  # Load/unload domain-specific knowledge
-├── skills/                  # Modular expert knowledge
-│   ├── swift-concurrency.md    # Actors, @MainActor, Swift 6.2
-│   ├── swiftui-performance.md  # View anti-patterns, optimization
-│   └── crash-analysis.md       # Reading crash reports, symbolication
-└── Hooks & configs          # Circuit breaker, memory compactor, lefthook
+├── docs/
+│   ├── SaneProcess.md          # Complete methodology (1,400+ lines)
+│   └── PROJECT_TEMPLATE.md     # Customize for your project
+├── scripts/
+│   ├── init.sh                 # One-command project setup
+│   ├── mac_context.rb          # Mac development knowledge injection
+│   ├── skill_loader.rb         # Load/unload domain-specific knowledge
+│   └── hooks/                  # 7 production-ready hooks
+│       ├── circuit_breaker.rb     # Blocks after 3 failures
+│       ├── edit_validator.rb      # Path safety + file size limits
+│       ├── failure_tracker.rb     # Tracks consecutive failures
+│       ├── test_quality_checker.rb # Detects tautology tests
+│       ├── path_rules.rb          # Shows context-specific rules
+│       ├── session_start.rb       # Bootstraps session state
+│       └── audit_logger.rb        # Logs all decisions
+├── skills/                     # Modular expert knowledge
+│   ├── swift-concurrency.md
+│   ├── swiftui-performance.md
+│   └── crash-analysis.md
+└── .claude/rules/              # Pattern-based rules (auto-loaded)
+    ├── views.md, tests.md, services.md
+    ├── models.md, scripts.md, hooks.md
 ```
 
 ### Skills System
@@ -97,20 +110,22 @@ No subscriptions. No recurring fees. Pay once, get all future updates.
 
 You can view the full source code here. To use it in your projects, purchase a license.
 
-**Quick look at the Golden Rules:**
+**Quick look at the 13 Golden Rules:**
 
 ```
 #0  NAME THE RULE BEFORE YOU CODE
 #1  STAY IN YOUR LANE (files in project)
-#2  VERIFY BEFORE YOU TRY (check docs)
+#2  VERIFY BEFORE YOU TRY (check docs first)
 #3  TWO STRIKES? INVESTIGATE
 #4  GREEN MEANS GO (tests must pass)
-#5  USE PROJECT TOOLS
+#5  THEIR HOUSE, THEIR RULES (use project tools)
 #6  BUILD, KILL, LAUNCH, LOG
 #7  NO TEST? NO REST
-#8  FILE SIZE LIMITS (500/800)
-#9  NEW FILE? UPDATE PROJECT
-#10 TRACK WITH TodoWrite
+#8  BUG FOUND? WRITE IT DOWN
+#9  NEW FILE? GEN THAT PILE
+#10 FIVE HUNDRED'S FINE, EIGHT'S THE LINE
+#11 TOOL BROKE? FIX THE YOKE
+#12 TALK WHILE I WALK (stay responsive)
 ```
 
 ---
@@ -127,4 +142,4 @@ Open an issue or contact [@stephanjoseph](https://github.com/stephanjoseph)
 
 ---
 
-*SaneProcess v2.1 - January 2026*
+*SaneProcess v2.2 - January 2026*
