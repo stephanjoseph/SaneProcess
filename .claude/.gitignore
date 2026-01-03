@@ -1,0 +1,8 @@
+# Session state (local only, don't commit)
+circuit_breaker.json
+failure_state.json
+audit.jsonl
+
+# Keep rules and settings
+!rules/
+!settings.json
