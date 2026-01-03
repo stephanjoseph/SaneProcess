@@ -160,6 +160,8 @@ HOOKS=(
     "two_fix_reminder.rb"
     "verify_reminder.rb"
     "version_mismatch.rb"
+    "deeper_look_trigger.rb"
+    "skill_validator.rb"
 )
 
 for hook in "${HOOKS[@]}"; do

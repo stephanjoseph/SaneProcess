@@ -17,6 +17,8 @@ Production-ready hooks for Claude Code SOP enforcement.
 | `test_quality_checker.rb` | PostToolUse | Warns on tautology tests like `#expect(true)` | No |
 | `verify_reminder.rb` | PostToolUse | Reminds Rule #6 cycle after Swift edits | No |
 | `audit_logger.rb` | PostToolUse | Logs all tool calls to `.claude/audit.jsonl` | No |
+| `deeper_look_trigger.rb` | PostToolUse | Reminds to audit when issues discovered | No |
+| `skill_validator.rb` | PreToolUse | Validates sane-loop has exit conditions | **Yes** |
 
 ## How They Work
 

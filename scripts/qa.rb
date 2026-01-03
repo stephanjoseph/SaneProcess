@@ -40,6 +40,8 @@ class SaneProcessQA
     two_fix_reminder.rb
     verify_reminder.rb
     version_mismatch.rb
+    deeper_look_trigger.rb
+    skill_validator.rb
   ].freeze
 
   EXPECTED_RULE_COUNT = 13
