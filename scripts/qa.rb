@@ -62,6 +62,7 @@ class SaneProcessQA
     check_readme_hook_count
     check_sop_doc_rule_count
     check_hooks_readme
+    check_version_consistency
     check_urls
     run_hook_tests
 
@@ -266,6 +267,51 @@ class SaneProcessQA
     else
       @errors << "hooks/README.md missing: #{missing.join(', ')}"
       puts "❌ Missing docs: #{missing.join(', ')}"
+    end
+  end
+
+  def check_version_consistency
+    print "Checking version consistency... "
+
+    versions = {}
+
+    # Check README.md
+    if File.exist?(README)
+      content = File.read(README)
+      if (match = content.match(/SaneProcess v(\d+\.\d+)/i))
+        versions['README.md'] = match[1]
+      end
+    end
+
+    # Check docs/SaneProcess.md
+    if File.exist?(SOP_DOC)
+      content = File.read(SOP_DOC)
+      if (match = content.match(/SaneProcess v(\d+\.\d+)/i))
+        versions['SaneProcess.md'] = match[1]
+      end
+    end
+
+    # Check init.sh
+    if File.exist?(INIT_SCRIPT)
+      content = File.read(INIT_SCRIPT)
+      if (match = content.match(/Version (\d+\.\d+)/i))
+        versions['init.sh'] = match[1]
+      end
+    end
+
+    if versions.empty?
+      @warnings << "No version strings found"
+      puts "⚠️  No versions found"
+      return
+    end
+
+    unique_versions = versions.values.uniq
+    if unique_versions.count == 1
+      puts "✅ All files at v#{unique_versions.first}"
+    else
+      details = versions.map { |f, v| "#{f}=v#{v}" }.join(', ')
+      @errors << "Version mismatch: #{details}"
+      puts "❌ Mismatch: #{details}"
     end
   end
 
