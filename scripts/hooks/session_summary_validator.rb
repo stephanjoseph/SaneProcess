@@ -45,6 +45,7 @@ SATISFACTION_FILE = File.join(PROJECT_DIR, '.claude/process_satisfaction.json')
 RESEARCH_PROGRESS_FILE = File.join(PROJECT_DIR, '.claude/research_progress.json')
 REQUIREMENTS_FILE = File.join(PROJECT_DIR, '.claude/prompt_requirements.json')
 SANELOOP_ARCHIVE_DIR = File.join(PROJECT_DIR, '.claude/saneloop-archive')
+SUMMARY_VALIDATED_FILE = File.join(PROJECT_DIR, '.claude/summary_validated.json')
 
 # Weasel words that indicate lazy/vague compliance claims
 WEASEL_PATTERNS = [
@@ -300,6 +301,14 @@ if cleaned.any?
   warn '   Next task requires fresh research & compliance'
   warn ''
 end
+
+# Mark session summary as validated (resets edit count requirement)
+summary_data = {
+  validated_at: Time.now.iso8601,
+  score: calculated_score,
+  edit_count_at_validation: 0  # Will be used to track edits since last summary
+}
+File.write(SUMMARY_VALIDATED_FILE, JSON.pretty_generate(summary_data))
 
 # Celebration for high scores
 if calculated_score >= 9

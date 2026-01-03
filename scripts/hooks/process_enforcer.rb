@@ -22,6 +22,7 @@
 
 require 'json'
 require 'fileutils'
+require 'time'
 require_relative 'state_signer'
 
 PROJECT_DIR = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd
@@ -32,6 +33,11 @@ ENFORCEMENT_LOG = File.join(PROJECT_DIR, '.claude/enforcement_log.jsonl')
 MEMORY_CHECK_FILE = File.join(PROJECT_DIR, '.claude/memory_checked.json')
 BYPASS_FILE = File.join(PROJECT_DIR, '.claude/bypass_active.json')
 RESEARCH_PROGRESS_FILE = File.join(PROJECT_DIR, '.claude/research_progress.json')
+EDIT_STATE_FILE = File.join(PROJECT_DIR, '.claude/edit_state.json')
+SUMMARY_VALIDATED_FILE = File.join(PROJECT_DIR, '.claude/summary_validated.json')
+
+# Session summary required after this many edits
+SUMMARY_REQUIRED_AFTER_EDITS = 25
 
 # 5 mandatory research categories - ALL must be satisfied
 RESEARCH_CATEGORIES = {
@@ -187,6 +193,38 @@ def load_requirements
   JSON.parse(File.read(REQUIREMENTS_FILE), symbolize_names: true)
 rescue StandardError
   { requested: [], satisfied: [], modifiers: [] }
+end
+
+# Check if session summary is required (based on edit count)
+def session_summary_required?
+  return false unless File.exist?(EDIT_STATE_FILE)
+
+  edit_state = JSON.parse(File.read(EDIT_STATE_FILE), symbolize_names: true)
+  edit_count = edit_state[:edit_count] || 0
+
+  # Check if summary was validated after the edit count threshold
+  if File.exist?(SUMMARY_VALIDATED_FILE)
+    summary_data = JSON.parse(File.read(SUMMARY_VALIDATED_FILE), symbolize_names: true)
+    validated_at = Time.parse(summary_data[:validated_at]) rescue nil
+    edit_state_updated = Time.parse(edit_state[:updated] || edit_state['updated']) rescue nil
+
+    # If summary was validated AFTER current edit state started, we're good
+    return false if validated_at && edit_state_updated && validated_at > edit_state_updated
+  end
+
+  # Require summary after threshold
+  edit_count >= SUMMARY_REQUIRED_AFTER_EDITS
+rescue StandardError
+  false
+end
+
+def edits_since_summary
+  return 0 unless File.exist?(EDIT_STATE_FILE)
+
+  edit_state = JSON.parse(File.read(EDIT_STATE_FILE), symbolize_names: true)
+  edit_state[:edit_count] || 0
+rescue StandardError
+  0
 end
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -551,6 +589,19 @@ if requested.include?('verify') && !is_satisfied?(:verify)
       }
     end
   end
+end
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CHECK 8: Session Summary Required After 25+ Edits
+# ═══════════════════════════════════════════════════════════════════════════════
+
+if session_summary_required? && %w[Edit Write].include?(tool_name)
+  edit_count = edits_since_summary
+  blocks << {
+    rule: 'SESSION_SUMMARY_REQUIRED',
+    message: "#{edit_count} edits without session summary. Time to wrap up and document.",
+    fix: 'Write session summary to .claude/SESSION_HANDOFF.md with format: ## Session Summary, SOP Compliance: X/10, Performance: X/10'
+  }
 end
 
 # ═══════════════════════════════════════════════════════════════════════════════
