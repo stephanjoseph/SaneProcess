@@ -104,6 +104,21 @@ No subscriptions. No recurring fees. Pay once, get all future updates.
 
 **To purchase:** [Open an issue](https://github.com/stephanjoseph/SaneProcess/issues/new) with subject "License Request"
 
+## Installation
+
+After purchasing, one command installs everything:
+
+```bash
+curl -sL https://raw.githubusercontent.com/stephanjoseph/SaneProcess/main/scripts/init.sh | bash
+```
+
+This installs:
+- 7 SOP enforcement hooks
+- 6 pattern-based rules
+- Claude Code settings with hook registration
+- MCP server configuration
+- DEVELOPMENT.md with the 13 Golden Rules
+
 ---
 
 ## Preview
