@@ -57,6 +57,18 @@ SaneProcess enforces discipline through:
     ├── models.md, scripts.md, hooks.md
 ```
 
+### Automation Scripts
+
+Quality assurance and maintenance automation:
+
+```bash
+ruby scripts/qa.rb                    # Full product QA (hooks, docs, URLs, tests)
+ruby scripts/sync_check.rb ~/SaneBar  # Cross-project drift detection
+ruby scripts/memory_audit.rb          # Find unfixed bugs in Memory MCP
+```
+
+Pre-push hooks via `lefthook.yml` run QA automatically before each push.
+
 ### Skills System
 
 Load only what you need for your current task:
