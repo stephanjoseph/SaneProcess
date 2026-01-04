@@ -109,7 +109,7 @@ end
 
 tool_name = input['tool_name'] || ''
 tool_input = input['tool_input'] || {}
-tool_output = input['tool_response'] || ENV['CLAUDE_TOOL_OUTPUT'] || ''
+tool_output = input['tool_response'] || input['tool_output'] || ''
 
 # Check if this is a research tool
 category = category_for_tool(tool_name)

@@ -6,7 +6,7 @@
 # Usage:
 #   curl -sL https://raw.githubusercontent.com/stephanjoseph/SaneProcess/main/scripts/init.sh | bash
 #
-# Version 2.2 - January 2026
+# Version 2.3 - January 2026
 # Copyright (c) 2026 Stephan Joseph. All Rights Reserved.
 # License required for use: stephanjoseph2007@gmail.com
 #
@@ -80,7 +80,7 @@ validate_license
 
 echo ""
 echo -e "${BLUE}╔═══════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║${NC}              ${GREEN}SaneProcess v2.2 Installation${NC}                    ${BLUE}║${NC}"
+echo -e "${BLUE}║${NC}              ${GREEN}SaneProcess v2.3 Installation${NC}                    ${BLUE}║${NC}"
 echo -e "${BLUE}╚═══════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 

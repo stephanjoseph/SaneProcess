@@ -7,6 +7,7 @@ Production-ready hooks for Claude Code SOP enforcement.
 | Hook | Type | Purpose | Blocks? |
 |------|------|---------|---------|
 | `rule_tracker.rb` | Module | Shared tracking for rule enforcement analytics | N/A |
+| `state_signer.rb` | Module | HMAC signatures for state files (VULN-003 fix) | N/A |
 | `session_start.rb` | SessionStart | Bootstraps session, resets circuit breaker | No |
 | `circuit_breaker.rb` | PreToolUse | Stops after 3 consecutive failures | **Yes** |
 | `edit_validator.rb` | PreToolUse | Blocks dangerous paths, enforces 800-line limit | **Yes** |
@@ -25,6 +26,7 @@ Production-ready hooks for Claude Code SOP enforcement.
 | `prompt_analyzer.rb` | UserPromptSubmit | Detects trigger words, tracks patterns, learns from corrections | No |
 | `pattern_learner.rb` | PostToolUse | Logs actions for pattern learning, correlates with corrections | No |
 | `process_enforcer.rb` | PreToolUse | **BLOCKS** if bypassing required processes (research, plan, commit, verify, bash-file-bypass, subagent-bypass) | **Yes** |
+| `research_tracker.rb` | PostToolUse | Tracks research tool usage and findings, logs to .claude/research_findings.jsonl | No |
 
 ## How They Work
 

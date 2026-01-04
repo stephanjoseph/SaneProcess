@@ -50,11 +50,13 @@ class SaneProcessQA
     prompt_analyzer.rb
     pattern_learner.rb
     process_enforcer.rb
+    research_tracker.rb
   ].freeze
 
   # Shared modules that hooks require (not registered, but must exist)
   SHARED_MODULES = %w[
     rule_tracker.rb
+    state_signer.rb
   ].freeze
 
   # All hook files that should exist

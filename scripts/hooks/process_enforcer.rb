@@ -289,6 +289,42 @@ def detect_bash_file_write(command)
   file_write_patterns.any? { |p| command.match?(p) }
 end
 
+def detect_bash_table_bypass(command)
+  # VULN-004 FIX: Detect sed/echo inserting markdown tables
+  # Tables are banned (render terribly in terminal) - can't bypass with sed
+  return false unless command.match?(/\bsed\b|\becho\b|>>|>/)
+
+  # Look for table patterns in the command content
+  table_patterns = [
+    /\|[-:]+\|/,           # |---|---| header separator
+    /\|.*\|.*\|/,          # | col | col | rows
+  ]
+
+  table_patterns.any? { |p| command.match?(p) }
+end
+
+def detect_bash_size_bypass(command)
+  # VULN-005 FIX: Detect sed editing large files that would be blocked by Edit
+  # If Edit would block due to 800-line limit, sed shouldn't be allowed either
+  return nil unless command.match?(/\bsed\s+(-[a-zA-Z]*i|-i)/)
+
+  # Extract target file from sed command
+  # Pattern: sed -i '' 's/.../.../g' <filename>
+  file_match = command.match(/sed\s+(?:-[a-zA-Z]*i|-i)\s+(?:''|"")?\s*'[^']*'\s+(.+)$/)
+  file_match ||= command.match(/sed\s+(?:-[a-zA-Z]*i|-i)\s+(?:''|"")?\s*"[^"]*"\s+(.+)$/)
+  return nil unless file_match
+
+  file_path = file_match[1].strip.gsub(/['"]/, '')
+  return nil unless File.exist?(file_path)
+
+  line_count = File.readlines(file_path).count
+  is_markdown = file_path.end_with?('.md')
+  limit = is_markdown ? 1500 : 800
+
+  return { file: file_path, lines: line_count, limit: limit } if line_count > limit
+  nil
+end
+
 def detect_skipped_verification(content, tool_name)
   # Catch "done" claims without running verify
   done_patterns = [
@@ -351,8 +387,16 @@ if tool_name == 'Bash'
 end
 
 # Research tools are NEVER blocked - you can ALWAYS investigate
-is_research_tool = %w[Read Grep Glob WebFetch WebSearch Task].include?(tool_name) ||
+is_research_tool = %w[Read Grep Glob WebFetch WebSearch].include?(tool_name) ||
                    tool_name.start_with?('mcp__')
+
+# Task tool needs special handling - it's research UNLESS used for editing
+if tool_name == 'Task'
+  task_prompt = tool_input['prompt'] || ''
+  edit_keywords = %w[edit write create modify change update add append remove delete fix patch]
+  is_edit_task = edit_keywords.any? { |kw| task_prompt.downcase.include?(kw) }
+  is_research_tool = !is_edit_task  # Only research if NOT editing
+end
 
 # Read-only Bash commands are also research
 if tool_name == 'Bash'
@@ -545,6 +589,33 @@ if tool_name == 'Bash' && detect_bash_file_write(content)
       rule: 'BASH_FILE_WRITE_BYPASS',
       message: 'Detected Bash command that writes to files. Nice try!',
       fix: 'You cannot bypass Edit/Write restrictions with echo/sed/cat. Complete the required process first.'
+    }
+  end
+end
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CHECK 5.6: VULN-004 FIX - Bash Table Bypass Detection
+# ═══════════════════════════════════════════════════════════════════════════════
+
+if tool_name == 'Bash' && detect_bash_table_bypass(content)
+  blocks << {
+    rule: 'BASH_TABLE_BYPASS',
+    message: 'Detected markdown table in sed/echo command. Tables are banned.',
+    fix: 'Tables render terribly in terminal. Use plain lists instead. No bypassing with sed!'
+  }
+end
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CHECK 5.7: VULN-005 FIX - Bash File Size Bypass Detection
+# ═══════════════════════════════════════════════════════════════════════════════
+
+if tool_name == 'Bash'
+  size_violation = detect_bash_size_bypass(content)
+  if size_violation
+    blocks << {
+      rule: 'BASH_SIZE_BYPASS',
+      message: "sed target #{size_violation[:file]} is #{size_violation[:lines]} lines (limit: #{size_violation[:limit]}). Nice try!",
+      fix: 'Cannot bypass file size limits with sed. Split the file first.'
     }
   end
 end

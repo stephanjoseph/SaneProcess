@@ -38,7 +38,7 @@ SaneProcess enforces discipline through:
 │   ├── sanemaster/             # 19 SaneMaster modules
 │   ├── mac_context.rb          # Mac development knowledge injection
 │   ├── skill_loader.rb         # Load/unload domain-specific knowledge
-│   └── hooks/                  # 20 production-ready hooks
+│   └── hooks/                  # 21 production-ready hooks
 │       ├── circuit_breaker.rb     # Blocks after 3 failures
 │       ├── edit_validator.rb      # Path safety + file size limits
 │       ├── failure_tracker.rb     # Tracks consecutive failures
@@ -160,7 +160,7 @@ curl -sL https://raw.githubusercontent.com/stephanjoseph/SaneProcess/main/script
 ```
 
 This installs:
-- 20 SOP enforcement hooks
+- 21 SOP enforcement hooks
 - SaneMaster CLI (`Scripts/SaneMaster.rb` + 19 modules)
 - 6 pattern-based rules
 - Claude Code settings with hook registration

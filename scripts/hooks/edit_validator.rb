@@ -93,7 +93,7 @@ unless normalized_path.start_with?(normalized_project)
 end
 
 # =============================================================================
-# Rule #10: FILE SIZE - Warn at 500, block at 800
+# Rule #10: FILE SIZE - Warn at 500, block at 800 (or 1500 for .md docs)
 # =============================================================================
 
 if File.exist?(file_path)
@@ -105,18 +105,23 @@ if File.exist?(file_path)
   lines_added = new_string.lines.count - old_string.lines.count
   projected_count = line_count + lines_added
 
-  if projected_count > HARD_LIMIT
-    RuleTracker.log_violation(rule: 10, hook: 'edit_validator', reason: "#{projected_count} lines > #{HARD_LIMIT} limit")
+  # .md files get higher limits - documentation is naturally longer
+  is_markdown = file_path.end_with?('.md')
+  effective_soft = is_markdown ? 1000 : SOFT_LIMIT
+  effective_hard = is_markdown ? 1500 : HARD_LIMIT
+
+  if projected_count > effective_hard
+    RuleTracker.log_violation(rule: 10, hook: 'edit_validator', reason: "#{projected_count} lines > #{effective_hard} limit")
     warn ''
-    warn "🔴 BLOCKED: Rule #10 - #{projected_count} lines > #{HARD_LIMIT} limit. Split file first."
+    warn "🔴 BLOCKED: Rule #10 - #{projected_count} lines > #{effective_hard} limit. Split file first."
     warn ''
     exit 2 # Exit code 2 = BLOCK in Claude Code
-  elsif projected_count > SOFT_LIMIT
-    RuleTracker.log_enforcement(rule: 10, hook: 'edit_validator', action: 'warn', details: "#{projected_count} lines > #{SOFT_LIMIT} soft limit")
+  elsif projected_count > effective_soft
+    RuleTracker.log_enforcement(rule: 10, hook: 'edit_validator', action: 'warn', details: "#{projected_count} lines > #{effective_soft} soft limit")
     warn ''
     warn '⚠️  WARNING: Rule #10 - File approaching size limit'
     warn "   #{file_path}: #{line_count} → ~#{projected_count} lines"
-    warn "   Soft limit: #{SOFT_LIMIT} | Hard limit: #{HARD_LIMIT}"
+    warn "   Soft limit: #{effective_soft} | Hard limit: #{effective_hard}"
     warn '   Consider splitting soon.'
     warn ''
   end

@@ -18,6 +18,9 @@ TEST_PROJECT = '/tmp/saneprocess_hook_test'
 PASS = '✅'
 FAIL = '❌'
 
+# Load state signer for creating properly signed state files
+require_relative '../state_signer'
+
 # Test tracking
 @tests_run = 0
 @tests_passed = 0
@@ -121,14 +124,14 @@ def test_circuit_breaker
   result = run_hook('circuit_breaker.rb', { tool_name: 'Read' })
   assert_exit_code(result, 0, 'Allows Read (not in blocked list)')
 
-  # Test 3: Block when tripped
+  # Test 3: Block when tripped (must use StateSigner for signed state files)
   breaker_file = "#{TEST_PROJECT}/.claude/circuit_breaker.json"
-  File.write(breaker_file, JSON.generate({
-    failures: 5,
-    tripped: true,
-    tripped_at: Time.now.utc.iso8601,
-    trip_reason: 'Test trip'
-  }))
+  StateSigner.write_signed(breaker_file, {
+    'failures' => 5,
+    'tripped' => true,
+    'tripped_at' => Time.now.utc.iso8601,
+    'trip_reason' => 'Test trip'
+  })
 
   result = run_hook('circuit_breaker.rb', { tool_name: 'Edit' })
   assert_exit_code(result, 2, 'Blocks Edit when breaker tripped')
@@ -156,7 +159,7 @@ def test_edit_validator
     tool_input: { file_path: '/etc/passwd' }
   })
   assert_exit_code(result, 2, 'Blocks /etc/passwd')
-  assert_output_contains(result, /DANGEROUS PATH/, 'Shows dangerous path warning')
+  assert_output_contains(result, /Dangerous path/i, 'Shows dangerous path warning')
 
   # Test 3: Block ~/.ssh
   result = run_hook('edit_validator.rb', {
@@ -302,22 +305,23 @@ end
 def test_session_start
   puts "\n🚀 Session Start Tests"
 
-  # Create a tripped breaker to test reset
+  # Create a tripped breaker to test VULN-007 behavior (should NOT auto-reset)
   breaker_file = "#{TEST_PROJECT}/.claude/circuit_breaker.json"
-  File.write(breaker_file, JSON.generate({
-    failures: 5,
-    tripped: true,
-    tripped_at: Time.now.utc.iso8601
-  }))
+  StateSigner.write_signed(breaker_file, {
+    'failures' => 5,
+    'tripped' => true,
+    'tripped_at' => Time.now.utc.iso8601
+  })
 
   result = run_hook('session_start.rb', {})
   assert_exit_code(result, 0, 'Exits cleanly')
-  assert_output_contains(result, /session started/, 'Shows session started message')
+  # VULN-007: Session start warns about tripped breaker, does NOT reset it
+  assert_output_contains(result, /STILL TRIPPED|session started/i, 'Shows status message')
 
-  # Check breaker was reset
+  # VULN-007 FIX: Breaker should REMAIN tripped (prevents bypass by session restart)
   if File.exist?(breaker_file)
-    breaker = JSON.parse(File.read(breaker_file))
-    assert(breaker['tripped'] == false, 'Resets circuit breaker on session start')
+    breaker = StateSigner.read_verified(breaker_file) || JSON.parse(File.read(breaker_file))
+    assert(breaker['tripped'] == true, 'VULN-007: Breaker stays tripped on session start')
   end
 end
 
@@ -360,13 +364,15 @@ def test_process_enforcer
   assert_exit_code(result, 2, 'Blocks Bash sed -i')
   assert_output_contains(result, /BASH_FILE_WRITE_BYPASS/, 'Detects sed bypass')
 
-  # Test 4: Allows .claude state file writes
+  # Test 4: VULN-002 FIX - Bash file writes to .claude/ are now BLOCKED
+  # Hooks write via Ruby, not Bash - if Claude uses Bash, it's bypassing
   result = run_hook('process_enforcer.rb', {
     tool_name: 'Bash',
     tool_input: { command: 'echo "{}" > .claude/state.json' }
   })
-  # Should still block on SANELOOP but NOT on BASH_FILE_WRITE
-  assert_output_not_contains(result, /BASH_FILE_WRITE_BYPASS/, 'Allows .claude writes')
+  # VULN-002: Should block BOTH saneloop AND bash file write
+  assert_exit_code(result, 2, 'VULN-002: Blocks .claude writes via Bash')
+  assert_output_contains(result, /BASH_FILE_WRITE_BYPASS|SANELOOP/, 'Detects bypass attempt')
 
   # Test 5: Allows saneloop start command (bootstrap fix)
   result = run_hook('process_enforcer.rb', {

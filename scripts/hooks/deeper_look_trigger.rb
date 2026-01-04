@@ -81,6 +81,11 @@ WEASEL_PATTERNS = {
     msg: 'Check docs, don\'t trust memory. APIs change.',
     severity: :info
   },
+  /\bquickly\b/i => {
+    rule: '#2 / #3',
+    msg: 'Rushing = mistakes. Research properly, verify before you try.',
+    severity: :warning
+  },
 
   # Deferring (Rule #8)
   /fix (it |this )?later/i => {
