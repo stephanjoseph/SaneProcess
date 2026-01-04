@@ -34,11 +34,50 @@
     ]
   },
   "hooks": {
-    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "ruby ~/.claude/hooks/prompt_analyzer.rb", "timeout": 5}]}],
-    "SessionStart": [{"hooks": [{"type": "command", "command": "ruby ./scripts/hooks/hooks/session_start.rb", "timeout": 5}]}],
-    "PreToolUse": [{"hooks": [{"type": "command", "command": "ruby ./scripts/hooks/hooks/pre_tool_use.rb", "timeout": 5}]}],
-    "PostToolUse": [{"hooks": [{"type": "command", "command": "ruby ./scripts/hooks/hooks/post_tool_use.rb", "timeout": 5}]}],
-    "Stop": [{"hooks": [{"type": "command", "command": "ruby ~/.claude/hooks/stop_validator.rb", "timeout": 5}]}]
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruby ./scripts/hooks/saneprompt.rb",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruby ./scripts/hooks/sanetools.rb",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruby ./scripts/hooks/sanetrack.rb",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruby ./scripts/hooks/sanestop.rb",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
   },
   "enabledPlugins": {
     "swift-lsp@claude-plugins-official": true,

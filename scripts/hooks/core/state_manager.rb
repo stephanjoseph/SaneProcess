@@ -80,7 +80,10 @@ module StateManager
       halted: false,
       halted_at: nil,
       halted_reason: nil
-    }
+    },
+    # === INTELLIGENCE: New sections for pattern learning ===
+    action_log: [],  # Last 20 actions for correlation
+    learnings: []    # Learned patterns from corrections
   }.freeze
 
   class << self
@@ -179,11 +182,12 @@ module StateManager
     def load_state_unlocked
       return initialize_state unless File.exist?(STATE_FILE)
 
-      data = StateSigner.read_verified(STATE_FILE)
+      # Use stdlib symbolize_names: true via StateSigner
+      data = StateSigner.read_verified(STATE_FILE, symbolize: true)
       return initialize_state unless data
 
-      # Convert string keys to symbols and merge with schema defaults
-      symbolize_and_merge(data)
+      # Merge with schema defaults for any missing keys
+      merge_with_defaults(data)
     rescue JSON::ParserError, StandardError
       initialize_state
     end
@@ -228,22 +232,11 @@ module StateManager
       end
     end
 
-    # Convert string keys to symbols recursively, merge with schema
-    def symbolize_and_merge(data)
-      state = {}
-      SCHEMA.each do |section, defaults|
-        section_key = section.to_s
-        if data[section_key]
-          state[section] = defaults.dup
-          data[section_key].each do |k, v|
-            key = k.to_sym
-            state[section][key] = v if defaults.key?(key)
-          end
-        else
-          state[section] = defaults.dup
-        end
+    # Merge loaded data with schema defaults (data already has symbol keys from JSON.parse)
+    def merge_with_defaults(data)
+      SCHEMA.each_with_object({}) do |(section, defaults), state|
+        state[section] = data[section] || defaults.dup
       end
-      state
     end
 
     # Convert symbol keys to strings for JSON
