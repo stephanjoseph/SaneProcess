@@ -25,6 +25,8 @@ require 'fileutils'
 require 'time'
 require_relative 'state_signer'
 require_relative 'shortcut_detectors'
+require_relative 'bypass'
+require_relative 'phase_manager'
 
 include ShortcutDetectors
 
@@ -34,12 +36,16 @@ SANELOOP_STATE_FILE = File.join(PROJECT_DIR, '.claude/saneloop-state.json')
 SATISFACTION_FILE = File.join(PROJECT_DIR, '.claude/process_satisfaction.json')
 ENFORCEMENT_LOG = File.join(PROJECT_DIR, '.claude/enforcement_log.jsonl')
 MEMORY_CHECK_FILE = File.join(PROJECT_DIR, '.claude/memory_checked.json')
-BYPASS_FILE = File.join(PROJECT_DIR, '.claude/bypass_active.json')
 RESEARCH_PROGRESS_FILE = File.join(PROJECT_DIR, '.claude/research_progress.json')
 HYPOTHESIS_FILE = File.join(PROJECT_DIR, '.claude/research_hypotheses.json')
 READ_HISTORY_FILE = File.join(PROJECT_DIR, '.claude/read_history.json')
 EDIT_STATE_FILE = File.join(PROJECT_DIR, '.claude/edit_state.json')
 SUMMARY_VALIDATED_FILE = File.join(PROJECT_DIR, '.claude/summary_validated.json')
+ENFORCEMENT_BREAKER_FILE = File.join(PROJECT_DIR, '.claude/enforcement_breaker.json')
+
+
+# Enforcement breaker: After N identical blocks, stop blocking and alert user
+ENFORCEMENT_BREAKER_THRESHOLD = 5
 
 # Session summary required after this many edits
 SUMMARY_REQUIRED_AFTER_EDITS = 25
@@ -81,7 +87,28 @@ RESEARCH_CATEGORIES = {
 }.freeze
 
 # Early exit if bypass mode is active
-exit 0 if File.exist?(BYPASS_FILE)
+exit 0 if Bypass.active?
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# C1 FIX: BLOCKED READ PATHS - Sensitive files Claude must NEVER read
+# ═══════════════════════════════════════════════════════════════════════════════
+
+BLOCKED_READ_PATHS = [
+  File.expand_path('~/.claude_hook_secret'),     # HMAC signing secret - would allow forgery
+  File.expand_path('~/.claude/.hook_secret'),    # Alternate location
+  File.expand_path('~/.ssh'),                    # SSH keys
+  File.expand_path('~/.aws/credentials'),        # AWS credentials
+  File.expand_path('~/.netrc'),                  # Network credentials
+].freeze
+
+def check_blocked_read_path(file_path)
+  return false if file_path.nil? || file_path.empty?
+
+  normalized = File.expand_path(file_path)
+  BLOCKED_READ_PATHS.any? do |blocked|
+    normalized == blocked || normalized.start_with?("#{blocked}/")
+  end
+end
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SATISFACTION CHECKS - How to verify each requirement is met
@@ -164,18 +191,19 @@ end
 
 # Detect which research category a Task prompt belongs to (if any)
 # Uses regex patterns with word boundaries to avoid false positives
-def research_category_for_task_prompt(prompt)
-  return nil if prompt.nil? || prompt.empty?
+def research_category_for_task_prompt(prompt, description = nil)
+  combined = [prompt, description].compact.join(' ')
+  return nil if combined.empty?
 
   RESEARCH_CATEGORIES.each do |cat, config|
     patterns = config[:patterns] || []
     exclude_patterns = config[:exclude_patterns] || []
 
     # Check if any pattern matches
-    has_match = patterns.any? { |pat| prompt.match?(pat) }
+    has_match = patterns.any? { |pat| combined.match?(pat) }
 
     # Check if excluded (e.g., searching our own repo doesn't count for GitHub)
-    is_excluded = exclude_patterns.any? { |pat| prompt.match?(pat) }
+    is_excluded = exclude_patterns.any? { |pat| combined.match?(pat) }
 
     # Special case for GitHub: must NOT be searching our own repo
     if cat == :github && is_excluded
@@ -318,8 +346,32 @@ rescue JSON::ParserError, Errno::ENOENT
   exit 0
 end
 
+# BYPASS CHECK: If user enabled bypass (b+), skip all enforcement
+exit 0 if Bypass.active?
+
 tool_name = input['tool_name'] || ''
 tool_input = input['tool_input'] || {}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# C1 FIX: Block Read access to sensitive paths (secret key, SSH, credentials)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+if tool_name == 'Read'
+  file_path = tool_input['file_path'] || ''
+  if check_blocked_read_path(file_path)
+    # Check for one-time skip BEFORE blocking
+    if Bypass.skip_once?
+      exit 0
+    end
+
+    warn ''
+    warn '🔴 BLOCKED: Read access to sensitive file denied'
+    warn "   File: #{file_path}"
+    warn '   This file contains secrets that could compromise hook security.'
+    warn ''
+    exit 2
+  end
+end
 
 # Get the content being written/edited
 content = tool_input['new_string'] || tool_input['content'] || tool_input['command'] || ''
@@ -362,7 +414,8 @@ if tool_name == 'Task'
 
   # Track research Task calls by category
   unless is_edit_task
-    category = research_category_for_task_prompt(task_prompt)
+    task_desc = tool_input['description'] || ''
+    category = research_category_for_task_prompt(task_prompt, task_desc)
     if category
       mark_research_category(category, 'Task', task_prompt)
       warn "📊 Task research: #{RESEARCH_CATEGORIES[category][:name]} category tracked"
@@ -394,8 +447,39 @@ if is_bootstrap_command
   exit 0
 end
 
-# CRITICAL: Skip ALL enforcement for research - you can ALWAYS investigate
+# CRITICAL: Skip enforcement for research UNLESS SaneLoop is required but not active
+# BIG TASK FIX: If prompt requires SaneLoop, block even research Task agents until started
 if is_research_tool
+  # Check if SaneLoop is required but not active
+  is_big = reqs[:is_big_task] || PhaseManager.active?
+  is_simple = reqs[:is_task] && !is_big
+  needs_saneloop = requested.include?('saneloop') || is_big || is_simple
+  
+  if needs_saneloop
+    unless saneloop_active?
+      # Block TASK agents (not individual research tools - those are fine)
+      if tool_name == 'Task'
+        warn ''
+        if PhaseManager.active?
+          phase = PhaseManager.current_phase
+          warn "🛑 BLOCKED: Phase #{phase[:name]} needs SaneLoop"
+          warn "   #{PhaseManager.status}"
+          warn "   Fix: ./Scripts/SaneMaster.rb saneloop start \"Phase: #{phase[:name]}\""
+        elsif is_big
+          warn '🛑 BLOCKED: Big task needs phased SaneLoops'
+          warn '   This is a multi-phase task. Start Phase 1 first.'
+          warn '   Fix: ./Scripts/SaneMaster.rb saneloop start "Phase 1: Research"'
+        else
+          warn '🛑 BLOCKED: Task needs SaneLoop'
+          warn '   Even simple tasks need a SaneLoop for structure.'
+          warn '   Fix: ./Scripts/SaneMaster.rb saneloop start "your task"'
+        end
+        warn ''
+        exit 2
+
+      end
+    end
+  end
   # Track memory check - mandatory before project work
   if tool_name == 'mcp__memory__read_graph'
     FileUtils.mkdir_p(File.dirname(MEMORY_CHECK_FILE))
@@ -663,22 +747,137 @@ if session_summary_required? && %w[Edit Write].include?(tool_name)
   }
 end
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ENFORCEMENT CIRCUIT BREAKER
+# ═══════════════════════════════════════════════════════════════════════════════
+# If the same block fires 5x consecutively, the hook itself is likely broken.
+# Stop blocking, switch to warn-only, alert user to fix hooks or enable bypass.
+
+def load_enforcement_breaker
+  return { blocks: [], halted: false } unless File.exist?(ENFORCEMENT_BREAKER_FILE)
+  JSON.parse(File.read(ENFORCEMENT_BREAKER_FILE), symbolize_names: true)
+rescue StandardError
+  { blocks: [], halted: false }
+end
+
+def save_enforcement_breaker(state)
+  FileUtils.mkdir_p(File.dirname(ENFORCEMENT_BREAKER_FILE))
+  File.write(ENFORCEMENT_BREAKER_FILE, JSON.pretty_generate(state))
+end
+
+def enforcement_halted?
+  state = load_enforcement_breaker
+  state[:halted] == true
+end
+
+def check_enforcement_breaker(block_signature)
+  state = load_enforcement_breaker
+  
+  # Already halted? Stay halted until user resets
+  return :halted if state[:halted]
+  
+  # Add this block to history
+  state[:blocks] ||= []
+  state[:blocks] << { signature: block_signature, at: Time.now.iso8601 }
+  
+  # Keep only last 10 for analysis
+  state[:blocks] = state[:blocks].last(10)
+  
+  # Check if last N blocks have same signature
+  recent = state[:blocks].last(ENFORCEMENT_BREAKER_THRESHOLD)
+  if recent.length >= ENFORCEMENT_BREAKER_THRESHOLD
+    signatures = recent.map { |b| b[:signature] }
+    if signatures.uniq.length == 1
+      # Same block 5x in a row - HALT enforcement
+      state[:halted] = true
+      state[:halted_at] = Time.now.iso8601
+      state[:halted_reason] = block_signature
+      save_enforcement_breaker(state)
+      return :tripped
+    end
+  end
+  
+  save_enforcement_breaker(state)
+  :ok
+end
+
+def reset_enforcement_breaker
+  state = { blocks: [], halted: false, reset_at: Time.now.iso8601 }
+  save_enforcement_breaker(state)
+end
+
+def clear_enforcement_breaker_on_success
+  # Called when a tool succeeds - reset consecutive block counter
+  state = load_enforcement_breaker
+  return if state[:halted] # Don't auto-reset if halted - user must explicitly reset
+  state[:blocks] = [] # Clear block history on success
+  save_enforcement_breaker(state)
+end
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # ENFORCEMENT OUTPUT
 # ═══════════════════════════════════════════════════════════════════════════════
 
 if blocks.any?
-  log_enforcement('BLOCKED', blocks.map { |b| b[:rule] })
-
-  warn ''
-  warn '🛑 BLOCKED'
-  blocks.each do |b|
-    warn "  ❌ #{b[:rule]}: #{b[:message]}"
-    warn "     Fix: #{b[:fix]}"
+  # Check for one-time skip BEFORE blocking
+  if Bypass.skip_once?
+    exit 0
   end
-  warn ''
 
-  exit 2 # Exit code 2 = BLOCK in Claude Code
+  # Generate block signature for breaker tracking
+  block_signature = blocks.map { |b| b[:rule] }.sort.join('|')
+  breaker_status = check_enforcement_breaker(block_signature)
+  
+  case breaker_status
+  when :halted
+    # Enforcement already halted from previous session
+    warn ''
+    warn '⚠️  ENFORCEMENT HALTED (from previous loop)'
+    warn '   Hooks blocked 5x consecutively - likely a hook bug, not Claude.'
+    warn '   Options:'
+    warn '   1. "bypass on" - disable all enforcement'
+    warn '   2. Fix hooks in ~/SaneProcess/scripts/hooks/'
+    warn '   3. "reset enforcement breaker" - try enforcement again'
+    warn ''
+    warn "   Would have blocked: #{block_signature}"
+    warn ''
+    exit 0 # WARN only, don't block
+    
+  when :tripped
+    # Just tripped! Alert user dramatically
+    warn ''
+    warn '🚨 ENFORCEMENT CIRCUIT BREAKER TRIPPED!'
+    warn ''
+    warn '   The same block fired 5x consecutively.'
+    warn '   This usually means the HOOK is broken, not Claude.'
+    warn ''
+    warn "   Repeated block: #{block_signature}"
+    warn ''
+    warn '   ENFORCEMENT IS NOW HALTED until you:'
+    warn '   1. "bypass on" - disable all enforcement'
+    warn '   2. Fix hooks in ~/SaneProcess/scripts/hooks/'
+    warn '   3. "reset enforcement breaker" - try enforcement again'
+    warn ''
+    warn '   Allowing this tool call to proceed...'
+    warn ''
+    exit 0 # Allow this call, enforcement halted
+    
+  else
+    # Normal blocking
+    log_enforcement('BLOCKED', blocks.map { |b| b[:rule] })
+
+    warn ''
+    warn '🛑 BLOCKED'
+    blocks.each do |b|
+      warn "  ❌ #{b[:rule]}: #{b[:message]}"
+      warn "     Fix: #{b[:fix]}"
+    end
+    warn ''
+
+    exit 2 # Exit code 2 = BLOCK in Claude Code
+  end
 end
 
 # ═══════════════════════════════════════════════════════════════════════════════

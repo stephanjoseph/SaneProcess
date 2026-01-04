@@ -18,17 +18,89 @@ require 'fileutils'
 require 'time'
 require_relative 'rule_tracker'
 require_relative 'state_signer'
+require_relative 'bypass'
+require_relative 'phase_manager'
 
 REQUIREMENTS_FILE = '.claude/prompt_requirements.json'
 PATTERNS_FILE = '.claude/user_patterns.json'
 PROMPT_LOG_FILE = '.claude/prompt_log.jsonl'
-BYPASS_FILE = '.claude/bypass_active.json'
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TRIGGER DEFINITIONS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-TRIGGERS = {
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TASK vs QUESTION DETECTION
+# Questions = research OK without SaneLoop
+# Tasks = SaneLoop FIRST, then research inside
+# ═══════════════════════════════════════════════════════════════════════════════
+
+QUESTION_PATTERNS = [
+  /^explain\b/i,
+  /^(how|what|why|where|when|which|who|can|does|is|are|should|could|would)\b/i,
+  /\?$/,
+  /\bexplain\b.*\?/i,
+  /\bwhat's\b/i,
+  /\btell me about\b/i
+].freeze
+
+SIMPLE_TASK_PATTERNS = [
+  # Imperative with optional articles
+  /\b(fix|add|update|remove|refactor|change|delete)\s+\w+/i,
+  /^(ok|okay|alright|now|please|go|let's|start)\b.*\b(do|implement|build|create|add|fix|update|change|make|write|test|polish|refactor|move|delete|remove|setup|configure)\b/i,
+  /\b(implement|build|create|add|fix|update|change|make|write|refactor)\b.*\b(feature|function|method|class|component|service|test|ui|ux)\b/i,
+  /\btest\s+(everything|it|this|all)\b/i,
+  /\bpolish\b/i,
+  /\buntil\b.*\b(pass|work|done|complete)\b/i,
+  /\buse your subagents\b/i,
+  /\bmaximum research\b/i,
+  /\bextensive\b.*\b(research|work|implementation)\b/i,
+  /\brepeatedly\b/i,
+  /\bedge case/i,
+  /\bdo\s+\w+\s+research\b.*\b(implement|build|create|add|fix)\b/i,
+  /\bfix\s+(the|a|this)\s+\w+/i,
+  /\badd\s+(a|the|new)\s+\w+/i,
+  /\bupdate\s+(the|a|this)\s+\w+/i,
+  /\bremove\s+(the|a|this)\s+\w+/i,
+  /\bchange\s+(the|a|this)\s+\w+/i
+].freeze
+
+def is_question?(prompt)
+  QUESTION_PATTERNS.any? { |pat| prompt.match?(pat) }
+end
+
+def is_simple_task?(prompt)
+  SIMPLE_TASK_PATTERNS.any? { |pat| prompt.match?(pat) }
+end
+
+BIG_TASK_PATTERNS = [
+  /maximum +testing/i,
+  /\bextensive\b/i, /\brepeatedly\b/i, /\bedge\s+case/i,
+  /\bmaximum\s+research\b/i, /\b(use\s+)?(your\s+)?subagents\b/i,
+  /\bmultiple\s+(hypothes|approach)/i, /\bpolish\b.*\bdetail/i,
+  /\btest\s+everything\b/i, /\buntil\b.*\b(pass|work|fail|done|perfect|pro|stable|clean|complete)/i
+].freeze
+
+def is_big_task?(prompt)
+  # Big task if: has big indicators AND (is a task OR has implement/build/etc)
+  has_big = BIG_TASK_PATTERNS.any? { |pat| prompt.match?(pat) }
+  # Added research/researching for 'use subagents to research' patterns
+  has_action = prompt.match?(/\b(implement|implementing|build|create|fix|test|testing|polish|polishing|research|researching|explore|exploring)\b/i)
+  has_big && (is_simple_task?(prompt) || has_action)
+end
+
+def is_task?(prompt)
+  # A prompt is a task if it is a simple task OR a big task
+  # BUT NOT if it is a genuine question (ends with ? AND starts with question word)
+  return false if prompt.match?(/\?$/) && prompt.match?(/^(how|what|why|where|when|which|who|can|does|is|are|should|could|would)\b/i)
+  is_simple_task?(prompt) || is_big_task?(prompt)
+end
+
+
+
+TRIGGERS =
+ {
   saneloop: {
     patterns: [/\bsaneloop\b/i, /\bsane.?loop\b/i, /\bdo a.*loop\b/i],
     action: 'Start SaneLoop with acceptance criteria',
@@ -38,17 +110,6 @@ TRIGGERS = {
     patterns: [/\bresearch this\b/i, /\bresearch first\b/i, /\bdo research\b/i],
     action: 'Use research protocol: mcp__memory__read_graph FIRST, then docs/web',
     satisfaction: 'research_done'
-  },
-  bypass: {
-    patterns: [
-      /\bbypass\s+on\b/i,
-      /\bbypass\s+off\b/i,
-      /\benable\s+bypass\b/i,
-      /\bturn\s+off\s+enforcement\b/i
-    ],
-    action: 'USER OVERRIDE - Toggle enforcement (user-only keyword)',
-    satisfaction: 'bypassed',
-    clears_all: true
   },
   plan: {
     patterns: [/\bmake a plan\b/i, /\bplan this\b/i, /\bplan first\b/i, /\bcreate a plan\b/i],
@@ -100,6 +161,33 @@ TRIGGERS = {
     patterns: [/\bwrap up\b/i, /\bend session\b/i, /\bwrap up session\b/i, /\bclose.*session\b/i, /\bfinish up\b/i],
     action: 'Run compliance report → proper summary (SOP Compliance + Performance) → session_end',
     satisfaction: 'session_ended'
+    },
+  big_task: {
+    patterns: [
+      /\bextensive\s+research\b/i,
+      /\bimplement.*test.*repeatedly\b/i,
+      /\bmaximum\s+research\b/i,
+      /\buntil.*edge\s+case\b/i,
+      /\b(use\s+)?(your\s+)?subagents\b/i,
+      /\bpolish\b.*\bdetails\b/i,
+      /\bimplement\b.*\btest\b.*\bpolish\b/i,
+      /\bcomprehensive\b.*\bimplement\b/i
+    ],
+    action: 'START SANELOOP FIRST - This is a multi-phase task requiring structured workflow',
+    satisfaction: 'saneloop_started',
+    requires_saneloop: true
+
+  },
+  phase_complete: {
+    patterns: [
+      /\bphase\s+(complete|done|finished)\b/i,
+      /\bnext\s+phase\b/i,
+      /\bmove\s+to\s+(next\s+)?phase\b/i,
+      /\bphase\s+\d\s+(complete|done)\b/i
+    ],
+    action: 'Complete current phase and move to next',
+    satisfaction: 'phase_advanced',
+    is_phase_transition: true
   },
   skip_research: {
     patterns: [
@@ -111,6 +199,16 @@ TRIGGERS = {
     satisfaction: 'skip_approved',
     is_skip: true
   },
+  reset_enforcement_breaker: {
+  patterns: [
+    /\breset\s+enforcement\s*breaker\b/i,
+    /\bclear\s+enforcement\s*breaker\b/i,
+    /\bunhalt\s+enforcement\b/i
+  ],
+  action: 'Reset enforcement circuit breaker (VULN-008 protection)',
+  satisfaction: 'enforcement_breaker_reset',
+  is_enforcement_reset: true
+},
   reset_breaker: {
     patterns: [
       /\breset\s+breaker\b/i,
@@ -255,6 +353,43 @@ end
 prompt = input['prompt'] || ''
 exit 0 if prompt.empty?
 
+# TASK vs QUESTION detection - this determines if SaneLoop is required
+prompt_is_task = is_task?(prompt)
+prompt_is_question = is_question?(prompt) && !prompt_is_task
+
+if prompt_is_task
+  # Check if already in a phased task
+  if PhaseManager.active?
+    phase = PhaseManager.current_phase
+    warn ''
+    warn "📋 PHASED TASK IN PROGRESS: #{PhaseManager.status}"
+    warn "   Current phase criteria:"
+    phase[:criteria].each { |c| warn "   - #{c}" }
+    warn ''
+  else
+    # Start new phased task
+    first_phase = PhaseManager.start_phased_task(prompt[0..200])
+    warn ''
+    warn '📋 BIG TASK DETECTED - Starting phased workflow'
+    warn ''
+    warn '   Phase 1/5: RESEARCH'
+    warn '   Phase 2/5: PLAN'
+    warn '   Phase 3/5: IMPLEMENT'
+    warn '   Phase 4/5: TEST'
+    warn '   Phase 5/5: POLISH'
+    warn ''
+    warn '   Starting Phase 1: RESEARCH'
+    warn '   Criteria:'
+    first_phase[:criteria].each { |c| warn "   - #{c}" }
+    warn ''
+    warn '   Start SaneLoop: ./Scripts/SaneMaster.rb saneloop start "Phase 1: Research"'
+    warn ''
+  end
+end
+
+# Check for bypass commands
+exit 0 if Bypass.check_prompt(prompt)
+
 # Detect triggers, modifiers, and frustration
 detected_triggers = detect_patterns(prompt, TRIGGERS)
 detected_modifiers = detect_patterns(prompt, MODIFIERS)
@@ -268,7 +403,7 @@ reqs = load_requirements
 
 # HIGH-PRIORITY triggers that reset the enforcement context (new task)
 # These indicate user wants a fresh workflow, not a continuation
-FRESH_START_TRIGGERS = %w[saneloop test_mode commit].freeze
+FRESH_START_TRIGGERS = %w[saneloop test_mode commit big_task].freeze
 
 # ADDITIVE triggers that layer onto existing requirements
 # These don't reset - they add to what's already required
@@ -276,27 +411,6 @@ ADDITIVE_TRIGGERS = %w[explain show remember research plan verify bug_note].free
 
 if detected_triggers.any?
   trigger_names = detected_triggers.map { |t| t[:name].to_s }
-
-  # USER-ONLY BYPASS ON/OFF
-  if trigger_names.include?('bypass')
-    if prompt.match?(/\bbypass\s+off\b/i)
-      # Turn enforcement back ON
-      FileUtils.rm_f(BYPASS_FILE)
-      warn ''
-      warn '🔒 BYPASS OFF: Enforcement re-enabled'
-      warn ''
-      exit 0
-    else
-      # Turn enforcement OFF (persistent)
-      FileUtils.mkdir_p(File.dirname(BYPASS_FILE))
-      File.write(BYPASS_FILE, { activated_at: Time.now.iso8601 }.to_json)
-      FileUtils.rm_f(REQUIREMENTS_FILE)
-      warn ''
-      warn '🔓 BYPASS ON: Enforcement disabled. Say "bypass off" to re-enable.'
-      warn ''
-      exit 0
-    end
-  end
 
   # SKIP RESEARCH CATEGORY (user approval required)
   # RULE: Can only skip categories that were ATTEMPTED first
@@ -424,6 +538,39 @@ if detected_triggers.any?
     exit 0
   end
 
+# RESET ENFORCEMENT BREAKER (VULN-008: infinite loop protection)
+if trigger_names.include?('reset_enforcement_breaker')
+  breaker_file = '.claude/enforcement_breaker.json'
+  
+  if File.exist?(breaker_file)
+    state = JSON.parse(File.read(breaker_file), symbolize_names: true) rescue {}
+    
+    if state[:halted]
+      # Reset the breaker
+      new_state = { blocks: [], halted: false, reset_at: Time.now.iso8601, reset_by: 'user' }
+      File.write(breaker_file, JSON.pretty_generate(new_state))
+      
+      warn ''
+      warn '✅ ENFORCEMENT BREAKER RESET'
+      warn "   Was halted because: #{state[:halted_reason]}"
+      warn '   Enforcement is now active again.'
+      warn ''
+      exit 0
+    else
+      warn ''
+      warn '⚠️  Enforcement breaker is not halted - nothing to reset'
+      warn ''
+      exit 0
+    end
+  else
+    warn ''
+    warn '⚠️  No enforcement breaker state found - nothing to reset'
+    warn ''
+    exit 0
+  end
+end
+
+
   # Check if this is a fresh start (user starting new task)
   is_fresh_start = (trigger_names & FRESH_START_TRIGGERS).any?
 
@@ -443,6 +590,9 @@ if detected_triggers.any?
 
   reqs[:modifiers] = ((reqs[:modifiers] || []) + detected_modifiers.map { |m| m[:name].to_s }).uniq
   reqs[:timestamp] = Time.now.iso8601
+  reqs[:is_task] = prompt_is_task
+  reqs[:is_big_task] = prompt_is_big_task
+  reqs[:is_question] = prompt_is_question
   save_requirements(reqs)
 end
 
