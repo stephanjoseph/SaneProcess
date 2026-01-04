@@ -208,42 +208,136 @@ module SaneMasterModules
     # Anti-patterns that always pass regardless of code behavior:
     # - Tautologies: `x == true || x == false` (always true)
     # - Always-true: `#expect(Bool(true))` or `#expect(true)`
-    # - Empty assertions: tests with no #expect or XCTAssert
+    # - Hardcoded magic values that only work for specific inputs
+    # - TODO/FIXME placeholders in assertions
     def check_test_quality
       puts '🔬 Test Quality:'
-      issues = { tautologies: [], always_true: [], empty_tests: [] }
+      scan_test_quality(verbose: false)
+    end
 
+    # Full test quality scan with line numbers - standalone command
+    def run_test_scan(args = [])
+      verbose = args.include?('--verbose') || args.include?('-v')
+      puts '🔬 --- [ TEST QUALITY SCAN ] ---'
+      puts 'Scanning Swift test files for anti-patterns...'
+      puts ''
+      scan_test_quality(verbose: true)
+    end
+
+    # Core scanning logic - used by both check_test_quality and run_test_scan
+    def scan_test_quality(verbose: false)
+      # Comprehensive patterns from test_quality_checker.rb
+      tautology_patterns = [
+        # Literal true/false assertions
+        { pattern: /#expect\s*\(\s*true\s*\)/i, name: '#expect(true)' },
+        { pattern: /#expect\s*\(\s*false\s*\)/i, name: '#expect(false)' },
+        { pattern: /XCTAssertTrue\s*\(\s*true\s*\)/i, name: 'XCTAssertTrue(true)' },
+        { pattern: /XCTAssertFalse\s*\(\s*false\s*\)/i, name: 'XCTAssertFalse(false)' },
+        { pattern: /XCTAssert\s*\(\s*true\s*\)/i, name: 'XCTAssert(true)' },
+        # Always-true boolean logic
+        { pattern: /== true\s*\|\|\s*.*== false/i, name: 'x == true || x == false (always true)' },
+        { pattern: /== false\s*\|\|\s*.*== true/i, name: 'x == false || x == true (always true)' },
+        # Placeholder assertions
+        { pattern: /XCTAssert.*TODO/i, name: 'XCTAssert with TODO' },
+        { pattern: /XCTAssert.*FIXME/i, name: 'XCTAssert with FIXME' },
+        { pattern: /#expect.*TODO/i, name: '#expect with TODO' },
+        { pattern: /#expect.*FIXME/i, name: '#expect with FIXME' }
+      ]
+
+      hardcoded_patterns = [
+        # Magic numbers (excluding 0, 1, 2, 10, 100, -1)
+        { pattern: /#expect\s*\([^)]+==\s*(?!0\b|1\b|2\b|10\b|100\b|-1\b)\d{2,}\s*\)/, name: 'Hardcoded magic number' },
+        { pattern: /XCTAssertEqual\s*\([^,]+,\s*(?!0\b|1\b|2\b|10\b|100\b|-1\b)\d{2,}\s*\)/, name: 'Hardcoded magic number' },
+        # Long literal strings (30+ chars)
+        { pattern: /#expect\s*\([^)]+==\s*"[^"]{30,}"\s*\)/, name: 'Long hardcoded string' },
+        { pattern: /XCTAssertEqual\s*\([^,]+,\s*"[^"]{30,}"\s*\)/, name: 'Long hardcoded string' },
+        # Arbitrary array counts
+        { pattern: /#expect\s*\([^)]+\.count\s*==\s*(?!0\b|1\b|2\b|3\b|10\b)\d+\s*\)/, name: 'Hardcoded array count' }
+      ]
+
+      issues = { tautologies: [], hardcoded: [] }
       test_files = Dir.glob('__PROJECT_NAME__Tests/**/*.swift')
 
       test_files.each do |file|
         content = File.read(file)
+        lines = content.lines
         relative_path = file.sub('__PROJECT_NAME__Tests/', '')
 
-        # Check for tautologies: `== true || ... == false`
-        tautology_matches = content.scan(/== true \|\| .* == false|== false \|\| .* == true/)
-        issues[:tautologies] << { file: relative_path, count: tautology_matches.count } if tautology_matches.any?
+        # Check tautology patterns with line numbers
+        tautology_patterns.each do |pat|
+          lines.each_with_index do |line, idx|
+            next unless line.match?(pat[:pattern])
 
-        # Check for always-true assertions
-        always_true_patterns = [
-          /#expect\(Bool\(true\)/,
-          /#expect\(true,/,
-          /#expect\(true\)/
-        ]
-        always_true_count = always_true_patterns.sum { |p| content.scan(p).count }
-        issues[:always_true] << { file: relative_path, count: always_true_count } if always_true_count.positive?
-      end
-
-      total_issues = issues.values.sum { |arr| arr.sum { |i| i[:count] } }
-
-      if total_issues > TEST_QUALITY_WARN
-        puts "   ❌ #{total_issues} test quality issues found"
-
-        issues[:tautologies].each do |i|
-          puts "      ⚠️  #{i[:file]}: #{i[:count]} tautological assertion(s)"
+            issues[:tautologies] << {
+              file: relative_path,
+              line: idx + 1,
+              pattern: pat[:name],
+              snippet: line.strip[0..60]
+            }
+          end
         end
 
-        issues[:always_true].each do |i|
-          puts "      ⚠️  #{i[:file]}: #{i[:count]} always-true assertion(s)"
+        # Check hardcoded patterns with line numbers
+        hardcoded_patterns.each do |pat|
+          lines.each_with_index do |line, idx|
+            next unless line.match?(pat[:pattern])
+
+            issues[:hardcoded] << {
+              file: relative_path,
+              line: idx + 1,
+              pattern: pat[:name],
+              snippet: line.strip[0..60]
+            }
+          end
+        end
+      end
+
+      total_tautologies = issues[:tautologies].count
+      total_hardcoded = issues[:hardcoded].count
+      total_issues = total_tautologies + total_hardcoded
+
+      if total_issues > TEST_QUALITY_WARN
+        if verbose
+          # Detailed output with line numbers
+          if issues[:tautologies].any?
+            puts '❌ TAUTOLOGIES (tests that always pass):'
+            issues[:tautologies].group_by { |i| i[:file] }.each do |file, file_issues|
+              puts "   📄 #{file}"
+              file_issues.each do |issue|
+                puts "      Line #{issue[:line]}: #{issue[:pattern]}"
+                puts "         #{issue[:snippet]}..." if issue[:snippet].length > 10
+              end
+            end
+            puts ''
+          end
+
+          if issues[:hardcoded].any?
+            puts '⚠️  HARDCODED VALUES (may not generalize):'
+            issues[:hardcoded].group_by { |i| i[:file] }.each do |file, file_issues|
+              puts "   📄 #{file}"
+              file_issues.each do |issue|
+                puts "      Line #{issue[:line]}: #{issue[:pattern]}"
+              end
+            end
+            puts ''
+          end
+
+          puts '─' * 50
+          puts "📊 Summary: #{total_tautologies} tautologies, #{total_hardcoded} hardcoded values"
+          puts ''
+          puts '💡 A good test should:'
+          puts '   • Test computed values, not literals'
+          puts '   • Fail when code is broken'
+          puts '   • Work for all valid inputs, not just test fixtures'
+        else
+          # Brief output for health check
+          puts "   ❌ #{total_issues} test quality issues found"
+          issues[:tautologies].group_by { |i| i[:file] }.each do |file, arr|
+            puts "      ⚠️  #{file}: #{arr.count} tautological assertion(s)"
+          end
+          issues[:hardcoded].group_by { |i| i[:file] }.each do |file, arr|
+            puts "      💡 #{file}: #{arr.count} hardcoded value(s)"
+          end
         end
       else
         puts '   ✅ No test anti-patterns detected'

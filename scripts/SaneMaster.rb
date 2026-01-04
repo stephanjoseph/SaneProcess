@@ -79,7 +79,8 @@ class SaneMaster
         'deprecations' => { args: '', desc: 'Scan for deprecated API usage' },
         'swift6' => { args: '', desc: 'Verify Swift 6 concurrency compliance' },
         'check_docs' => { args: '', desc: 'Check docs are in sync with code' },
-        'check_binary' => { args: '', desc: 'Audit binary for security issues' }
+        'check_binary' => { args: '', desc: 'Audit binary for security issues' },
+        'test_scan' => { args: '[-v]', desc: 'Scan tests for tautologies and hardcoded values' }
       }
     },
     debug: {
@@ -247,6 +248,8 @@ class SaneMaster
       swift6_check
     when 'test_suite', 'suite'
       run_test_suite(args)
+    when 'test_scan', 'scan_tests', 'test_quality'
+      run_test_scan(args)
     when 'check_binary'
       check_binary
 
