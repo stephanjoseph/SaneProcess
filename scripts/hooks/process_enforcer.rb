@@ -50,32 +50,33 @@ SIGNIFICANT_TASK_THRESHOLD = 3
 # 5 mandatory research categories - ALL must be satisfied via TASK AGENTS
 # ENFORCEMENT: Individual tool calls don't count. Must spawn Task agents.
 # This prevents gaming by calling tools that fail or only searching our own repo.
+# FIX: Use regex patterns with word boundaries (\b) to avoid false positives
 RESEARCH_CATEGORIES = {
   memory: {
     name: 'Memory',
-    keywords: %w[memory knowledge graph past bugs patterns],
+    patterns: [/\bmemory\b/i, /\bknowledge.?graph\b/i, /\bpast.?bugs\b/i, /\bmcp__memory\b/i],
     desc: 'Check past bugs/patterns via Task agent'
   },
   docs: {
     name: 'API Docs',
-    keywords: %w[docs documentation api apple-docs context7 sdk interface],
+    patterns: [/\bdocumentation\b/i, /\bapi.?docs\b/i, /\bapple-docs\b/i, /\bcontext7\b/i, /\bsdk\b/i],
     desc: 'Verify APIs exist via Task agent'
   },
   web: {
     name: 'Web Search',
-    keywords: %w[web search google community stackoverflow best practices],
+    patterns: [/\bweb.?search\b/i, /\bgoogle\b/i, /\bstackoverflow\b/i, /\bwebsearch\b/i],
     desc: 'Find patterns/solutions via Task agent'
   },
   local: {
     name: 'Local Codebase',
-    keywords: %w[local codebase existing code project files grep glob],
+    patterns: [/\blocal.?code/i, /\bcodebase\b/i, /\bexisting.?code\b/i, /\bproject.?files\b/i],
     desc: 'Understand existing code via Task agent'
   },
   github: {
     name: 'External GitHub',
-    keywords: %w[github external repos community projects examples],
+    patterns: [/\bgithub\b/i, /\bexternal.?repo/i, /\bopen.?source\b/i, /\bmcp__github\b/i],
     desc: 'Learn from community projects (NOT our repo) via Task agent',
-    exclude_keywords: %w[stephanjoseph saneprocess] # Our repo doesn't count!
+    exclude_patterns: [/stephanjoseph/i, /saneprocess/i] # Our repo doesn't count!
   }
 }.freeze
 
@@ -162,20 +163,19 @@ def mark_research_category(category, tool_name, prompt = nil)
 end
 
 # Detect which research category a Task prompt belongs to (if any)
+# Uses regex patterns with word boundaries to avoid false positives
 def research_category_for_task_prompt(prompt)
   return nil if prompt.nil? || prompt.empty?
 
-  prompt_lower = prompt.downcase
-
   RESEARCH_CATEGORIES.each do |cat, config|
-    keywords = config[:keywords] || []
-    exclude = config[:exclude_keywords] || []
+    patterns = config[:patterns] || []
+    exclude_patterns = config[:exclude_patterns] || []
 
-    # Check if any keyword matches
-    has_keyword = keywords.any? { |kw| prompt_lower.include?(kw) }
+    # Check if any pattern matches
+    has_match = patterns.any? { |pat| prompt.match?(pat) }
 
     # Check if excluded (e.g., searching our own repo doesn't count for GitHub)
-    is_excluded = exclude.any? { |ex| prompt_lower.include?(ex) }
+    is_excluded = exclude_patterns.any? { |pat| prompt.match?(pat) }
 
     # Special case for GitHub: must NOT be searching our own repo
     if cat == :github && is_excluded
@@ -183,7 +183,7 @@ def research_category_for_task_prompt(prompt)
       next
     end
 
-    return cat if has_keyword
+    return cat if has_match
   end
 
   nil
