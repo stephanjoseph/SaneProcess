@@ -141,7 +141,44 @@ class SaneMaster
   ].freeze
 
   def initialize
-    @bundle_id = 'com.sanevideo.__PROJECT_NAME__'
+    @bundle_id = detect_bundle_id
+  end
+
+  # C4 FIX: Dynamically detect bundle ID from project.yml or xcodeproj
+  def detect_bundle_id
+    # Try to read from project.yml first (XcodeGen projects)
+    if File.exist?('project.yml')
+      begin
+        require 'yaml'
+        config = YAML.safe_load(File.read('project.yml'))
+        # Look for PRODUCT_BUNDLE_IDENTIFIER in settings
+        if config.dig('settings', 'PRODUCT_BUNDLE_IDENTIFIER')
+          return config.dig('settings', 'PRODUCT_BUNDLE_IDENTIFIER')
+        end
+        # Look in targets
+        config['targets']&.each do |_name, target|
+          bundle_id = target.dig('settings', 'PRODUCT_BUNDLE_IDENTIFIER')
+          return bundle_id if bundle_id && !bundle_id.include?('Tests')
+        end
+      rescue StandardError
+        # Fall through to xcodeproj detection
+      end
+    end
+
+    # Try to detect from xcodeproj files
+    xcodeprojs = Dir.glob('*.xcodeproj')
+    if xcodeprojs.any?
+      project_name = File.basename(xcodeprojs.first, '.xcodeproj')
+      # Use xcodebuild to get the bundle ID
+      output = `xcodebuild -project "#{xcodeprojs.first}" -scheme "#{project_name}" -showBuildSettings 2>/dev/null | grep PRODUCT_BUNDLE_IDENTIFIER`
+      if output =~ /PRODUCT_BUNDLE_IDENTIFIER\s*=\s*(\S+)/
+        return $1
+      end
+    end
+
+    # Fallback: derive from project directory name
+    project_dir = File.basename(Dir.pwd)
+    "com.sanevideo.#{project_dir.downcase}"
   end
 
   def run(args)
