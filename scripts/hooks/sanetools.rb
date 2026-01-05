@@ -73,13 +73,14 @@ REQUIREMENT_SATISFACTION = {
 
 # === BLOCKED PATHS ===
 
+# Block sensitive directories (with OR without trailing content)
 BLOCKED_PATH_PATTERN = Regexp.union(
-  %r{^/var/},
-  %r{^/etc/},
-  %r{^/usr/},
-  %r{^/System/},
-  %r{\.ssh/},
-  %r{\.aws/},
+  %r{^/var(/|$)},           # /var or /var/...
+  %r{^/etc(/|$)},           # /etc or /etc/...
+  %r{^/usr(/|$)},           # /usr or /usr/...
+  %r{^/System(/|$)},        # /System or /System/...
+  %r{\.ssh(/|$)},           # ~/.ssh or ~/.ssh/...
+  %r{\.aws(/|$)},           # ~/.aws or ~/.aws/...
   %r{\.claude_hook_secret},
   %r{/\.git/objects/},
   %r{\.netrc},
@@ -132,10 +133,19 @@ def check_blocked_path(tool_input)
   path = tool_input['file_path'] || tool_input['path'] || tool_input[:file_path] || tool_input[:path]
   return nil unless path
 
-  path = File.expand_path(path) rescue path
+  # URL-decode the path to catch encoded bypass attempts (%2e%2e = ..)
+  require 'uri'
+  decoded_path = URI.decode_www_form_component(path) rescue path
 
-  if path.match?(BLOCKED_PATH_PATTERN)
-    return "BLOCKED PATH: #{path}\nRule #1: Stay in your lane"
+  # Expand both original and decoded paths
+  expanded_path = File.expand_path(path) rescue path
+  expanded_decoded = File.expand_path(decoded_path) rescue decoded_path
+
+  # Check both versions against blocked patterns
+  [path, decoded_path, expanded_path, expanded_decoded].each do |p|
+    if p.match?(BLOCKED_PATH_PATTERN)
+      return "BLOCKED PATH: #{path}\nRule #1: Stay in your lane"
+    end
   end
 
   nil
@@ -239,21 +249,47 @@ def check_enforcement_halted
   nil
 end
 
+# Allowed targets for bash redirects (safe destinations)
+# NOTE: Comments break alternation in extended mode, so keep them outside
+SAFE_REDIRECT_TARGETS = Regexp.union(
+  '/dev/null',        # discard output
+  %r{^/tmp/},         # temp files
+  %r{^/var/tmp/},     # temp files
+  %r{DerivedData/},   # Xcode build output
+  %r{\.build/},       # Swift build output
+  %r{^build/}         # generic build output
+).freeze
+
 def check_bash_bypass(tool_name, tool_input)
   return nil unless tool_name == 'Bash'
 
   command = tool_input['command'] || tool_input[:command] || ''
 
+  # Check for file write patterns
   if command.match?(BASH_FILE_WRITE_PATTERN)
-    # Check if research is complete
-    research = StateManager.get(:research)
-    complete = research_complete?(research)
+    # Extract the redirect target if present
+    target_match = command.match(/(?:>|>>|tee\s+)\s*([^\s|&;]+)/)
+    target = target_match ? target_match[1] : nil
 
-    unless complete
-      return "BASH FILE WRITE BLOCKED\n" \
-             "Command appears to write files: #{command[0..50]}...\n" \
-             "Complete research first (5 categories)."
+    # Allow safe redirect targets
+    if target && target.match?(SAFE_REDIRECT_TARGETS)
+      return nil
     end
+
+    # Allow pure stderr redirects (2>&1, 2>/dev/null)
+    if command.match?(/^\s*\S+.*2>&1\s*$/) || command.match?(/2>\/dev\/null/)
+      # Only if no other dangerous redirects
+      unless command.match?(/[^2]>\s*[^&]/) || command.match?(/>>/)
+        return nil
+      end
+    end
+
+    # ALWAYS block file writes to source files - this is a BYPASS attempt
+    # Claude should use Edit/Write tools which have proper tracking
+    return "BASH FILE WRITE BLOCKED\n" \
+           "Command appears to write files: #{command[0..80]}...\n" \
+           "Use Edit or Write tool instead - bash writes bypass tracking.\n" \
+           "Allowed: /tmp/, /dev/null, build dirs, stderr redirects (2>&1)"
   end
 
   nil
