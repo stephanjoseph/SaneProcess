@@ -38,20 +38,18 @@ SaneProcess enforces discipline through:
 │   ├── sanemaster/             # 19 SaneMaster modules
 │   ├── mac_context.rb          # Mac development knowledge injection
 │   ├── skill_loader.rb         # Load/unload domain-specific knowledge
-│   └── hooks/                  # 21 production-ready hooks
-│       ├── circuit_breaker.rb     # Blocks after 3 failures
-│       ├── edit_validator.rb      # Path safety + file size limits
-│       ├── failure_tracker.rb     # Tracks consecutive failures
-│       ├── process_enforcer.rb    # 5-category research enforcement
-│       ├── prompt_analyzer.rb     # Detects user intent from prompts
-│       ├── research_tracker.rb    # Tracks research across categories
-│       ├── session_summary_validator.rb # Auto-calculates SOP score
-│       ├── saneloop_enforcer.rb   # Warns at iteration limits
-│       ├── state_signer.rb        # HMAC signatures for state files
-│       ├── rule_tracker.rb        # Logs violations for scoring
-│       ├── sop_mapper.rb          # Enforces Rule #0 mapping
-│       ├── audit_logger.rb        # Logs all decisions
-│       └── ...                    # + 8 more enforcement hooks
+│   └── hooks/                  # 4 consolidated enforcement hooks
+│       ├── saneprompt.rb       # UserPromptSubmit: Detects intent, sets requirements
+│       ├── sanetools.rb        # PreToolUse: Blocks until research complete
+│       ├── sanetrack.rb        # PostToolUse: Tracks failures, updates state
+│       ├── sanestop.rb         # Stop: Ensures session summary before exit
+│       ├── core/               # Shared infrastructure
+│       │   ├── state_manager.rb    # Thread-safe state with HMAC signatures
+│       │   └── hook_registry.rb    # Hook configuration and routing
+│       └── test/               # 259 tests across 3 tiers
+│           ├── tier_tests.rb       # 217 tests (Easy/Hard/Villain)
+│           ├── real_failures_test.rb # 42 tests from actual Claude failures
+│           └── recovery_test.rb    # End-to-end recovery verification
 ├── skills/                     # Modular expert knowledge
 │   ├── swift-concurrency.md
 │   ├── swiftui-performance.md
@@ -113,6 +111,40 @@ Key features:
 
 Run `./Scripts/SaneMaster.rb help` for all commands.
 
+## Hook Architecture
+
+Four consolidated hooks handle all enforcement:
+
+| Hook | When | What It Does |
+|------|------|--------------|
+| **saneprompt** | UserPromptSubmit | Analyzes user intent, sets research requirements |
+| **sanetools** | PreToolUse | Blocks destructive ops until research complete |
+| **sanetrack** | PostToolUse | Tracks failures, updates circuit breaker |
+| **sanestop** | Stop | Ensures session summary before exit |
+
+### Damage Potential Categorization
+
+Tools are blocked based on blast radius, not name:
+
+| Category | Blast Radius | Examples | Blocked Until |
+|----------|--------------|----------|---------------|
+| Read-only | None | Read, Grep, search_nodes | Never |
+| Local mutation | This project | Edit, Write | Research complete |
+| Global mutation | ALL projects | memory delete/create | Research complete |
+| External mutation | Outside systems | GitHub push/merge | Research complete |
+
+This prevents Claude from nuking shared resources (like MCP memory) without understanding the impact.
+
+### Test Coverage
+
+259 tests across 3 tiers:
+- **Easy (75)**: Basic functionality
+- **Hard (72)**: Edge cases and complex scenarios
+- **Villain (70)**: Adversarial bypass attempts
+- **Real Failures (42)**: Actual Claude misbehavior patterns
+
+---
+
 ## The "Supervisor" Advantage
 
 SaneProcess isn't just rules - it's a **Mac App Factory** layer:
@@ -160,7 +192,7 @@ curl -sL https://raw.githubusercontent.com/stephanjoseph/SaneProcess/main/script
 ```
 
 This installs:
-- 21 SOP enforcement hooks
+- 4 consolidated SOP enforcement hooks (259 tests)
 - SaneMaster CLI (`Scripts/SaneMaster.rb` + 19 modules)
 - 6 pattern-based rules
 - Claude Code settings with hook registration
@@ -205,4 +237,4 @@ Open an issue or contact [@stephanjoseph](https://github.com/stephanjoseph)
 
 ---
 
-*SaneProcess v2.3 - January 2026*
+*SaneProcess v2.4 - January 2026*
