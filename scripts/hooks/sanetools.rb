@@ -332,6 +332,54 @@ def check_bash_bypass(tool_name, tool_input)
   nil
 end
 
+# === README UPDATE CHECK ===
+# When committing after significant changes, README should be updated
+
+SIGNIFICANT_FILE_PATTERNS = [
+  %r{scripts/hooks/.*\.rb$},      # Hook files
+  %r{scripts/sanemaster/.*\.rb$}, # SaneMaster modules
+  %r{scripts/SaneMaster\.rb$},    # Main CLI
+  %r{docs/.*\.md$}                # Documentation
+].freeze
+
+def check_readme_on_commit(tool_name, tool_input)
+  return nil unless tool_name == 'Bash'
+
+  command = tool_input['command'] || tool_input[:command] || ''
+
+  # Only check on git commit
+  return nil unless command.match?(/git\s+commit/)
+
+  # Get edited files from state
+  edits = StateManager.get(:edits)
+  edited_files = edits[:unique_files] || []
+
+  # Check if any significant files were edited
+  significant_edits = edited_files.any? do |f|
+    SIGNIFICANT_FILE_PATTERNS.any? { |p| f.match?(p) }
+  end
+
+  return nil unless significant_edits
+
+  # Check if README was also edited
+  readme_updated = edited_files.any? { |f| f.match?(/README\.md$/i) }
+
+  return nil if readme_updated
+
+  # Warn but don't block (user may have valid reason)
+  warn '---'
+  warn 'README UPDATE REMINDER'
+  warn ''
+  warn 'You edited significant files but README.md was not updated:'
+  significant = edited_files.select { |f| SIGNIFICANT_FILE_PATTERNS.any? { |p| f.match?(p) } }
+  significant.first(5).each { |f| warn "  - #{File.basename(f)}" }
+  warn ''
+  warn "Consider updating README.md to reflect these changes."
+  warn '---'
+
+  nil  # Don't block, just remind
+end
+
 def check_subagent_bypass(tool_name, tool_input)
   return nil unless tool_name == 'Task'
 
@@ -549,6 +597,9 @@ def process_tool(tool_name, tool_input)
     output_block(reason)
     return 2
   end
+
+  # Check README on commit (non-blocking reminder)
+  check_readme_on_commit(tool_name, tool_input)
 
   # All checks passed
   log_action(tool_name, false)
