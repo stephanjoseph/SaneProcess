@@ -97,10 +97,15 @@ module HookRegistry
 
       # DSL for defining hook metadata
       def register_as(type, priority: 50, only: nil, except: nil)
+        @registered = true
         @hook_type = type.to_sym
         @priority = priority
         @only_tools = Array(only).map(&:to_s) if only
         @except_tools = Array(except).map(&:to_s) if except
+      end
+
+      def registered?
+        @registered == true
       end
 
       def hook_type
@@ -218,6 +223,9 @@ module HookRegistry
 
       @mutex.synchronize do
         @enrollment_queue.each do |hook_class|
+          # Skip abstract base classes that didn't call register_as
+          next unless hook_class.registered?
+
           type = hook_class.hook_type
           @hooks[type] << hook_class
           @hooks[type].sort_by!(&:priority)

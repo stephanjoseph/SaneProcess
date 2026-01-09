@@ -22,6 +22,9 @@ require 'json'
 require 'fileutils'
 require 'time'
 require_relative 'core/state_manager'
+require_relative 'saneprompt_intelligence'
+
+include SanePromptIntelligence
 
 LOG_FILE = File.expand_path('../../.claude/saneprompt.log', __dir__)
 
@@ -36,11 +39,44 @@ PASSTHROUGH_PATTERN = Regexp.union(
 
 # === SAFEMODE COMMANDS ===
 BYPASS_FILE = File.expand_path('../../.claude/bypass_active.json', __dir__)
+SANEMASTER_PATH = File.expand_path('../../Scripts/SaneMaster.rb', __dir__)
 
 def handle_safemode_command(prompt)
   cmd = prompt.strip.downcase
 
-  if cmd.start_with?('s+') || cmd.start_with?('safemode on')
+  # === SANELOOP COMMANDS (user-only) ===
+  if cmd.start_with?('sl+') || cmd.start_with?('saneloop on') || cmd.start_with?('saneloop start')
+    # Start saneloop - extract task from command if provided
+    task_match = prompt.match(/sl\+\s+(.+)/i) || prompt.match(/saneloop\s+(?:on|start)\s+(.+)/i)
+    if task_match
+      task = task_match[1].strip
+      result = `#{SANEMASTER_PATH} saneloop start "#{task}" 2>&1`
+      warn ''
+      warn result
+      warn ''
+    else
+      warn ''
+      warn 'SANELOOP: Provide a task description'
+      warn '  Usage: sl+ <task description>'
+      warn '  Example: sl+ Fix the authentication bug'
+      warn ''
+    end
+    true
+  elsif cmd.start_with?('sl-') || cmd.start_with?('saneloop off') || cmd.start_with?('saneloop stop')
+    # Stop/cancel saneloop
+    result = `#{SANEMASTER_PATH} saneloop cancel 2>&1`
+    warn ''
+    warn result
+    warn ''
+    true
+  elsif cmd.start_with?('sl?') || cmd == 'saneloop' || cmd.start_with?('saneloop status')
+    # Show saneloop status
+    result = `#{SANEMASTER_PATH} saneloop status 2>&1`
+    warn ''
+    warn result
+    warn ''
+    true
+  elsif cmd.start_with?('s+') || cmd.start_with?('safemode on')
     # Enable safemode = delete bypass file
     if File.exist?(BYPASS_FILE)
       File.delete(BYPASS_FILE)
@@ -72,12 +108,14 @@ def handle_safemode_command(prompt)
     debug_log("RESET BREAKER: cmd='#{cmd}'") rescue nil
     debug_log("BEFORE RESET: #{StateManager.get(:circuit_breaker).inspect}") rescue nil
     StateManager.reset(:circuit_breaker)
+    log_reset('circuit_breaker', 'User reset circuit breaker')
     debug_log("AFTER RESET: #{StateManager.get(:circuit_breaker).inspect}") rescue nil
     warn ''
     warn 'CIRCUIT BREAKER RESET'
     warn '  Failures: 0'
     warn '  Tripped: false'
     warn '  Error signatures: cleared'
+    warn '  (logged to reset_audit.log)'
     warn ''
     true
   elsif cmd.start_with?('rb?') || cmd == 'breaker status'
@@ -93,9 +131,58 @@ def handle_safemode_command(prompt)
     end
     warn ''
     true
+  elsif cmd.start_with?('reset blocks') || cmd == 'unblock'
+    # Reset refusal-to-read tracking (allows retrying after reading the message)
+    StateManager.reset(:refusal_tracking)
+    log_reset('refusal_tracking', 'User reset block counters')
+    warn ''
+    warn 'BLOCK COUNTERS RESET'
+    warn '  All block type counters cleared.'
+    warn '  You may now retry - but READ the block messages this time.'
+    warn '  Next block of same type starts fresh at count=1.'
+    warn ''
+    true
+  elsif cmd.start_with?('reset research') || cmd == 'rr-'
+    # Reset research tracking (forces re-doing all 5 categories)
+    StateManager.reset(:research)
+    log_reset('research', 'User reset research requirements')
+    warn ''
+    warn 'RESEARCH RESET'
+    warn '  All 5 research categories cleared.'
+    warn '  Must complete: memory, docs, web, github, local'
+    warn '  This is NOT a bypass - you must actually do the research.'
+    warn ''
+    true
+  elsif cmd == 'reset?' || cmd == 'resets?'
+    # Show all available reset commands
+    warn ''
+    warn 'AVAILABLE RESET COMMANDS'
+    warn ''
+    warn '  rb-  / reset breaker   → Clear circuit breaker (after 3+ failures)'
+    warn '  reset blocks / unblock → Clear block counters (after repeated blocks)'
+    warn '  rr- / reset research   → Clear research (forces redo all 5 categories)'
+    warn ''
+    warn 'Resets are LOGGED and do NOT disable hooks.'
+    warn 'They allow retry - the hooks still enforce rules.'
+    warn ''
+    true
   else
     false
   end
+end
+
+# Log all resets for audit trail
+def log_reset(what, reason)
+  log_file = File.join(CLAUDE_DIR, 'reset_audit.log')
+  entry = {
+    timestamp: Time.now.iso8601,
+    reset_type: what,
+    reason: reason,
+    pid: Process.pid
+  }
+  File.open(log_file, 'a') { |f| f.puts(entry.to_json) }
+rescue StandardError
+  # Don't fail on logging errors
 end
 
 QUESTION_PATTERN = Regexp.union(
@@ -127,14 +214,11 @@ PATTERN_TRIGGERS = {
   'easy' => { rules: ['#3', '#2'], warning: '"easy" often means skipped due diligence' },
   'minor' => { rules: ['#7'], warning: '"minor" changes still need tests' },
   'small' => { rules: ['#7'], warning: '"small" fixes still need tests' },
+  'tiny' => { rules: ['#7'], warning: '"tiny" fixes still need tests' },
+  'trivial' => { rules: ['#3', '#7'], warning: '"trivial" often means skipped verification' },
 }.freeze
 
-# === INTELLIGENCE: Frustration Detection ===
-FRUSTRATION_PATTERNS = {
-  correction: [/^no[,.]?\s/i, /that'?s not/i, /I said/i, /I meant/i, /I already/i],
-  impatience: [/use your head/i, /\bthink\b/i, /stop rushing/i, /\bidiot\b/i],
-  repetition: [/I just said/i, /like I said/i, /as I mentioned/i, /again/i]
-}.freeze
+# === INTELLIGENCE: Frustration Detection (in saneprompt_intelligence.rb) ===
 
 # === BUTT-KICKER: Catch ignored warnings ===
 def check_ignored_warning(prompt)
@@ -172,6 +256,36 @@ REQUIREMENT_TRIGGERS = {
   plan: [/\bplan\s*(first|before)\b/i, /\bmake a plan\b/i, /\bplan this\b/i],
   research: [/\bresearch\s*(first|this)\b/i, /\binvestigate\b/i, /\blook into\b/i]
 }.freeze
+
+# Research-only mode: user wants research WITHOUT any edits
+# When detected, ALL mutations blocked for the session (even after research complete)
+RESEARCH_ONLY_PATTERN = Regexp.union(
+  /\bresearch\b(?!.*\b(then|and|after)\b.*\b(fix|add|implement|update|change)\b)/i,  # "research X" without action verbs
+  /\binvestigate\b(?!.*\b(then|and)\b.*\bfix\b)/i,     # "investigate" without "then fix"
+  /\blook into\b(?!.*\b(then|and)\b.*\bfix\b)/i,       # "look into" without "then fix"
+  /\bexplore\b.*\b(codebase|code|project)\b/i,         # "explore the codebase"
+  /\bunderstand\b.*\b(how|why|what)\b/i,               # "understand how X works"
+  /\bexplain\b.*\b(how|why|what)\b/i,                  # "explain how X works"
+  /\bwhat('?s| is)\b.*\b(causing|happening|wrong)\b/i, # "what's causing X"
+  /\bfind out\b.*\bwhy\b/i                             # "find out why"
+).freeze
+
+# Action verbs that override research-only (user wants changes)
+ACTION_VERBS_PATTERN = /\b(fix|add|create|implement|update|change|modify|edit|write|remove|delete|refactor)\b/i.freeze
+
+# === RESEARCH-ONLY MODE DETECTION ===
+# User wants investigation WITHOUT any edits
+# When detected: ALL mutations blocked for entire session
+
+def detect_research_only_mode(prompt)
+  # Must match research pattern
+  return false unless prompt.match?(RESEARCH_ONLY_PATTERN)
+
+  # If action verbs present, user wants changes (not research-only)
+  return false if prompt.match?(ACTION_VERBS_PATTERN)
+
+  true
+end
 
 # Fresh start = reset requirements; Additive = add to existing
 FRESH_START_TRIGGERS = %w[saneloop commit test_mode].freeze
@@ -229,22 +343,6 @@ def detect_triggers(prompt)
   triggers
 end
 
-# === INTELLIGENCE: Frustration Detection ===
-
-def detect_frustration(prompt)
-  frustrations = []
-
-  FRUSTRATION_PATTERNS.each do |type, patterns|
-    patterns.each do |pattern|
-      if prompt.match?(pattern)
-        frustrations << { type: type, pattern: pattern.source }
-        break  # One match per type is enough
-      end
-    end
-  end
-
-  frustrations
-end
 
 # === INTELLIGENCE: Requirement Extraction ===
 
@@ -282,63 +380,9 @@ rescue StandardError
   # Don't fail on state errors
 end
 
-# === INTELLIGENCE: Pattern Learning ===
+# === INTELLIGENCE: Pattern Learning (in saneprompt_intelligence.rb) ===
 
-def learn_from_frustration(prompt, frustrations)
-  return if frustrations.empty?
-
-  StateManager.update(:requirements) do |reqs|
-    reqs[:frustration_count] = (reqs[:frustration_count] || 0) + 1
-    reqs
-  end
-
-  # Get recent actions for correlation
-  action_log = StateManager.get(:action_log) || []
-  recent_actions = action_log.last(3)
-
-  learning = {
-    type: frustrations.first[:type],
-    pattern: frustrations.first[:pattern],
-    recent_actions: recent_actions.map { |a| a[:tool] rescue a['tool'] },
-    prompt_fragment: prompt.slice(0, 100),
-    timestamp: Time.now.iso8601
-  }
-
-  # Store locally for session use
-  StateManager.update(:learnings) do |learnings|
-    learnings ||= []
-    learnings << learning
-    learnings.last(50)  # Keep last 50 learnings
-  end
-
-  # Log for analysis
-  log_learning(learning)
-rescue StandardError
-  # Don't fail on learning errors
-end
-
-def log_learning(learning)
-  learnings_file = File.expand_path('../../.claude/learnings.jsonl', __dir__)
-  FileUtils.mkdir_p(File.dirname(learnings_file))
-  File.open(learnings_file, 'a') { |f| f.puts(learning.to_json) }
-rescue StandardError
-  # Don't fail on logging errors
-end
-
-def check_past_learnings
-  learnings = StateManager.get(:learnings) || []
-  return nil if learnings.empty?
-
-  # Check if we have recent repeated corrections
-  recent = learnings.last(5)
-  correction_count = recent.count { |l| l[:type] == :correction || l['type'] == 'correction' }
-
-  if correction_count >= 3
-    return "PATTERN: #{correction_count} corrections in recent prompts. Read user message carefully."
-  end
-
-  nil
-end
+# === INTELLIGENCE: Pattern Display (in saneprompt_intelligence.rb) ===
 
 # === STATE & LOGGING ===
 
@@ -356,10 +400,11 @@ rescue StandardError
   # Don't fail on logging errors
 end
 
-def update_state(prompt_type, is_big_task)
+def update_state(prompt_type, is_big_task, is_research_only = false)
   StateManager.update(:requirements) do |req|
     req[:is_task] = [:task, :big_task].include?(prompt_type)
     req[:is_big_task] = prompt_type == :big_task
+    req[:is_research_only] = is_research_only
     req
   end
 rescue StandardError
@@ -368,7 +413,7 @@ end
 
 # === OUTPUT ===
 
-def output_context(prompt_type, rules, triggers, prompt, frustrations = [], detected_reqs = [], learning_warning = nil)
+def output_context(prompt_type, rules, triggers, prompt, frustrations = [], detected_reqs = [], learning_warning = nil, patterns = nil, memory_staging = nil)
   lines = []
 
   # Only show context for tasks
@@ -376,6 +421,42 @@ def output_context(prompt_type, rules, triggers, prompt, frustrations = [], dete
 
   lines << '---'
   lines << "Task type: #{prompt_type}"
+
+  # AUTO-SANELOOP: Inject structured workflow for ALL tasks
+  # This is the core of the unified workflow system
+  # Learned from 700+ iteration failure: guardrails prevent spirals
+  # User insight: "ANY code change is a big task" - no more "no big deal" syndrome
+  lines << ''
+  lines << 'WORKFLOW STRUCTURE (auto-injected):'
+  lines << '  1. Research ALL 5 categories before editing (memory, docs, web, github, local)'
+  lines << '  2. Define acceptance criteria: what does "done" look like?'
+  lines << '  3. Edits blocked until research complete (sanetools enforces)'
+  lines << '  4. Self-rate SOP compliance when done'
+  lines << ''
+  lines << 'GUARDRAILS ACTIVE (all code tasks):'
+  lines << '  - Max 3 edit attempts before mandatory research pause (ENFORCED)'
+  lines << '  - If stuck after 2 tries: STOP and investigate, do not guess'
+  lines << '  - Circuit breaker trips at 3 consecutive failures'
+  if prompt_type == :big_task
+    lines << ''
+    lines << 'BIG TASK - Additional guardrails:'
+    lines << '  - SaneLoop iterations tracked'
+    lines << '  - Max 20 iterations before human check-in'
+  end
+
+  # INTELLIGENCE: Memory MCP update needed from previous session
+  memory_context = format_memory_staging_context(memory_staging)
+  if memory_context
+    lines << ''
+    lines << memory_context
+  end
+
+  # INTELLIGENCE: Show learned patterns from previous sessions
+  pattern_context = format_patterns_for_claude(patterns)
+  if pattern_context
+    lines << ''
+    lines << pattern_context
+  end
 
   # INTELLIGENCE: Learning pattern warning
   if learning_warning
@@ -421,12 +502,19 @@ def output_context(prompt_type, rules, triggers, prompt, frustrations = [], dete
   puts lines.join("\n")
 end
 
-def output_warning(prompt_type, rules, triggers, frustrations = [], detected_reqs = [])
+def output_warning(prompt_type, rules, triggers, frustrations = [], detected_reqs = [], patterns = nil)
   # Only show warnings for tasks (stderr shown to user)
   return if [:passthrough, :question].include?(prompt_type)
 
   warn '---'
   warn "SanePrompt: #{prompt_type.to_s.gsub('_', ' ').upcase}"
+
+  # INTELLIGENCE: Show pattern summary to user
+  pattern_summary = format_patterns_for_user(patterns)
+  if pattern_summary
+    warn ''
+    warn pattern_summary
+  end
 
   # INTELLIGENCE: Show frustration warning to user
   if frustrations.any?
@@ -498,229 +586,66 @@ def process_prompt(prompt)
   # 4. Check past learnings for patterns
   learning_warning = check_past_learnings
 
+  # 5. Detect research-only mode
+  is_research_only = detect_research_only_mode(prompt)
+
+  # 6. Get learned patterns from previous sessions
+  learned_patterns = get_learned_patterns
+
+  # 7. Check for memory staging from previous session
+  memory_staging = check_memory_staging
+  # Mark as processed so it doesn't repeat on every prompt
+  mark_memory_staging_processed if memory_staging
+
   # === END INTELLIGENCE ===
 
   log_prompt(prompt_type, rules, triggers)
-  update_state(prompt_type, prompt_type == :big_task)
+  update_state(prompt_type, prompt_type == :big_task, is_research_only)
+
+  # Output research-only warning
+  if is_research_only
+    warn ''
+    warn '=' * 50
+    warn 'RESEARCH-ONLY MODE ACTIVE'
+    warn 'User wants investigation, NOT changes.'
+    warn 'ALL edits blocked for this session.'
+    warn '=' * 50
+    warn ''
+  end
+
+  # Output memory staging reminder to user
+  if memory_staging
+    warn ''
+    warn '=' * 50
+    warn 'MEMORY MCP UPDATE PENDING'
+    warn 'Previous session staged learnings - Claude will save to Memory MCP'
+    warn '=' * 50
+    warn ''
+  end
 
   # Output context to Claude (stdout)
-  output_context(prompt_type, rules, triggers, prompt, frustrations, detected_reqs, learning_warning)
+  output_context(prompt_type, rules, triggers, prompt, frustrations, detected_reqs, learning_warning, learned_patterns, memory_staging)
 
   # Output warning to user (stderr)
-  output_warning(prompt_type, rules, triggers, frustrations, detected_reqs)
+  output_warning(prompt_type, rules, triggers, frustrations, detected_reqs, learned_patterns)
 
   0  # Always allow prompts
 end
 
 # === SELF-TEST ===
+# Tests extracted to saneprompt_test.rb per Rule #10
 
 def self_test
-  warn 'SanePrompt Self-Test'
-  warn '=' * 40
-
-  passed = 0
-  failed = 0
-
-  # === TEST COMMANDS FIRST (the ones that were never tested!) ===
-  warn ''
-  warn 'Testing commands:'
-
-  # Test rb- resets circuit breaker
-  StateManager.update(:circuit_breaker) { |cb| cb[:tripped] = true; cb[:failures] = 5; cb }
-  original_stderr = $stderr.clone
-  $stderr.reopen('/dev/null', 'w')
-  result = handle_safemode_command('rb-')
-  $stderr.reopen(original_stderr)
-  cb_after = StateManager.get(:circuit_breaker)
-  if result == true && cb_after[:tripped] == false && cb_after[:failures] == 0
-    passed += 1
-    warn '  PASS: rb- resets circuit breaker'
-  else
-    failed += 1
-    warn "  FAIL: rb- - result=#{result}, tripped=#{cb_after[:tripped]}"
-  end
-
-  # Test rb? returns true
-  $stderr.reopen('/dev/null', 'w')
-  result = handle_safemode_command('rb?')
-  $stderr.reopen(original_stderr)
-  if result == true
-    passed += 1
-    warn '  PASS: rb? shows status'
-  else
-    failed += 1
-    warn '  FAIL: rb? should return true'
-  end
-
-  # Test s- creates bypass file
-  bypass_file = File.expand_path('../../.claude/bypass_active.json', __dir__)
-  File.delete(bypass_file) if File.exist?(bypass_file)
-  $stderr.reopen('/dev/null', 'w')
-  handle_safemode_command('s-')
-  $stderr.reopen(original_stderr)
-  if File.exist?(bypass_file)
-    passed += 1
-    warn '  PASS: s- creates bypass file'
-  else
-    failed += 1
-    warn '  FAIL: s- should create bypass file'
-  end
-
-  # Test s+ deletes bypass file
-  $stderr.reopen('/dev/null', 'w')
-  handle_safemode_command('s+')
-  $stderr.reopen(original_stderr)
-  if !File.exist?(bypass_file)
-    passed += 1
-    warn '  PASS: s+ deletes bypass file'
-  else
-    failed += 1
-    warn '  FAIL: s+ should delete bypass file'
-    File.delete(bypass_file) rescue nil
-  end
-
-  # === TEST JSON PARSING (the real production flow) ===
-  warn ''
-  warn 'Testing JSON parsing:'
-
-  # Test correct JSON structure
-  require 'open3'
-  json_input = '{"session_id":"test","prompt":"rb?"}'
-  stdout, stderr, status = Open3.capture3("ruby #{__FILE__}", stdin_data: json_input)
-  if status.exitstatus == 0
-    passed += 1
-    warn '  PASS: JSON with prompt key parsed correctly'
-  else
-    failed += 1
-    warn "  FAIL: JSON parsing failed - exit #{status.exitstatus}"
-  end
-
-  # Test missing prompt key defaults to empty
-  json_input = '{"session_id":"test"}'
-  stdout, stderr, status = Open3.capture3("ruby #{__FILE__}", stdin_data: json_input)
-  if status.exitstatus == 0
-    passed += 1
-    warn '  PASS: Missing prompt key handled gracefully'
-  else
-    failed += 1
-    warn "  FAIL: Missing prompt key should not crash"
-  end
-
-  # Test invalid JSON doesn't crash
-  json_input = 'not valid json {'
-  stdout, stderr, status = Open3.capture3("ruby #{__FILE__}", stdin_data: json_input)
-  if status.exitstatus == 0
-    passed += 1
-    warn '  PASS: Invalid JSON handled gracefully'
-  else
-    failed += 1
-    warn "  FAIL: Invalid JSON should exit 0, not crash"
-  end
-
-  warn ''
-  warn 'Testing prompt classification:'
-
-  tests = [
-    # Passthroughs
-    { input: 'y', expect: :passthrough },
-    { input: 'yes', expect: :passthrough },
-    { input: '/commit', expect: :passthrough },
-    { input: '123', expect: :passthrough },
-    { input: 'ok', expect: :passthrough },
-
-    # Questions
-    { input: 'what does this function do?', expect: :question },
-    { input: 'how does the authentication work?', expect: :question },
-    { input: 'can you explain the architecture?', expect: :question },
-    { input: 'is this correct?', expect: :question },
-
-    # Tasks
-    { input: 'fix the bug in the login flow', expect: :task, rules: ['#3'] },
-    { input: 'add a new feature for user auth', expect: :task, rules: ['#0'] },
-    { input: 'refactor the database layer', expect: :task, rules: ['#4'] },
-    { input: 'create a new file for settings', expect: :task, rules: ['#1'] },
-
-    # Big tasks
-    { input: 'rewrite the entire authentication system', expect: :big_task },
-    { input: 'refactor everything in the core module', expect: :big_task },
-    { input: 'update all the components to use new API', expect: :big_task },
-
-    # Pattern triggers
-    { input: 'quick fix for the login', expect: :task, trigger: 'quick' },
-    { input: 'just add a button', expect: :task, trigger: 'just' },
-    { input: 'simple change to the config', expect: :task, trigger: 'simple' },
-
-    # INTELLIGENCE: Frustration detection
-    { input: 'no, I said fix the login', expect: :task, frustration: :correction },
-    { input: "that's not what I meant", expect: :question, frustration: :correction },
-    { input: 'I just said fix it the other way again', expect: :task, frustration: :repetition },
-
-    # INTELLIGENCE: Requirement extraction (classification may vary, requirement extraction is independent)
-    { input: 'start a saneloop and fix the bug', expect: :task, requirement: 'saneloop' },
-    { input: 'commit the changes after you fix it', expect: :task, requirement: 'commit' },
-    { input: 'make a plan first then implement', expect: :task, requirement: 'plan' },
-    { input: 'research this API then add the feature', expect: :task, requirement: 'research' },
-  ]
-
-  passed = 0
-  failed = 0
-
-  tests.each do |test|
-    result_type = classify_prompt(test[:input])
-    type_ok = result_type == test[:expect]
-
-    rules_ok = true
-    if test[:rules]
-      result_rules = rules_for_prompt(test[:input])
-      rules_ok = test[:rules].all? { |r| result_rules.any? { |rr| rr.include?(r) } }
-    end
-
-    trigger_ok = true
-    if test[:trigger]
-      triggers = detect_triggers(test[:input])
-      trigger_ok = triggers.any? { |t| t[:word] == test[:trigger] }
-    end
-
-    # INTELLIGENCE: Frustration detection test
-    frustration_ok = true
-    if test[:frustration]
-      frustrations = detect_frustration(test[:input])
-      frustration_ok = frustrations.any? { |f| f[:type] == test[:frustration] }
-    end
-
-    # INTELLIGENCE: Requirement extraction test
-    requirement_ok = true
-    if test[:requirement]
-      requirements = extract_requirements(test[:input])
-      requirement_ok = requirements.include?(test[:requirement])
-    end
-
-    if type_ok && rules_ok && trigger_ok && frustration_ok && requirement_ok
-      passed += 1
-      warn "  PASS: '#{test[:input][0..40]}' -> #{result_type}"
-    else
-      failed += 1
-      warn "  FAIL: '#{test[:input][0..40]}'"
-      warn "        expected #{test[:expect]}, got #{result_type}" unless type_ok
-      warn "        missing rule #{test[:rules]}" unless rules_ok
-      warn "        missing trigger #{test[:trigger]}" unless trigger_ok
-      warn "        missing frustration #{test[:frustration]}" unless frustration_ok
-      warn "        missing requirement #{test[:requirement]}" unless requirement_ok
-    end
-  end
-
-  warn ''
-  warn "#{passed}/#{tests.length} tests passed"
-
-  if failed == 0
-    warn ''
-    warn 'ALL TESTS PASSED'
-    exit 0
-  else
-    warn ''
-    warn "#{failed} TESTS FAILED"
-    exit 1
-  end
+  require_relative 'saneprompt_test'
+  exit SanePromptTest.run(
+    method(:classify_prompt),
+    method(:rules_for_prompt),
+    method(:detect_triggers),
+    method(:detect_frustration),
+    method(:extract_requirements),
+    method(:detect_research_only_mode),
+    method(:handle_safemode_command)
+  )
 end
 
 def check_heartbeat

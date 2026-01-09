@@ -29,6 +29,15 @@ LOG_FILE = File.expand_path('../../.claude/sanetrack.log', __dir__)
 EDIT_TOOLS = %w[Edit Write NotebookEdit].freeze
 FAILURE_TOOLS = %w[Bash Edit Write].freeze  # Tools that can fail and trigger circuit breaker
 
+# === MCP VERIFICATION TOOLS ===
+# Map MCP names to their read-only verification tools
+MCP_VERIFICATION_PATTERNS = {
+  memory: /^mcp__memory__(read_graph|search_nodes|open_nodes)$/,
+  apple_docs: /^mcp__apple-docs__/,
+  context7: /^mcp__context7__/,
+  github: /^mcp__github__(search_|get_|list_)/
+}.freeze
+
 # === RESEARCH TRACKING ===
 # Patterns to detect which research category a Task agent is completing
 RESEARCH_PATTERNS = {
@@ -38,6 +47,57 @@ RESEARCH_PATTERNS = {
   github: /github|mcp__github/i,
   local: /grep|glob|read|explore|codebase/i
 }.freeze
+
+# === TAUTOLOGY PATTERNS (Rule #7 - consolidated from test_quality_checker.rb) ===
+# Detects tests that always pass (useless tests)
+TAUTOLOGY_PATTERNS = [
+  # Literal boolean assertions
+  /#expect\s*\(\s*true\s*\)/i,
+  /#expect\s*\(\s*false\s*\)/i,
+  /XCTAssertTrue\s*\(\s*true\s*\)/i,
+  /XCTAssertFalse\s*\(\s*false\s*\)/i,
+  /XCTAssert\s*\(\s*true\s*\)/i,
+  # Boolean tautology (always true)
+  /#expect\s*\([^)]+==\s*true\s*\|\|\s*[^)]+==\s*false\s*\)/i,
+  # TODO placeholders
+  /XCTAssert.*TODO/i,
+  /#expect.*TODO/i,
+  # M9 additions: Self-comparison (always true)
+  /#expect\s*\(\s*(\w+)\s*==\s*\1\s*\)/,
+  /XCTAssertEqual\s*\(\s*(\w+)\s*,\s*\1\s*\)/,
+  # M9: Trivial non-nil check (need context to be sure, but flag for review)
+  /#expect\s*\([^)]+\s*!=\s*nil\s*\)\s*$/, # Standalone != nil often tautology
+  /XCTAssertNotNil\s*\(\s*\w+\s*\)\s*$/,  # Just variable, no setup context
+  # M9: Always-true comparisons
+  /#expect\s*\([^)]+\.count\s*>=\s*0\s*\)/i,      # count >= 0 always true
+  /XCTAssertGreaterThanOrEqual\s*\([^,]+\.count\s*,\s*0\s*\)/i,
+  # M9: Empty assertion (no actual check)
+  /#expect\s*\(\s*\)/,
+  /XCTAssert\s*\(\s*\)/
+].freeze
+
+# === TEST FILE PATTERN ===
+TEST_FILE_PATTERN = %r{(Tests?/|Specs?/|_test\.|_spec\.|Tests?\.swift|Spec\.swift)}i.freeze
+
+# === TAUTOLOGY DETECTION (Rule #7) ===
+def check_tautologies(tool_name, tool_input)
+  return nil unless EDIT_TOOLS.include?(tool_name)
+
+  file_path = tool_input['file_path'] || tool_input[:file_path] || ''
+  return nil unless file_path.match?(TEST_FILE_PATTERN)
+
+  new_string = tool_input['new_string'] || tool_input[:new_string] || ''
+  return nil if new_string.empty?
+
+  matches = TAUTOLOGY_PATTERNS.select { |pattern| new_string.match?(pattern) }
+  return nil if matches.empty?
+
+  # Build warning message
+  "RULE #7 WARNING: Test contains tautology (always passes)\n" \
+  "   File: #{File.basename(file_path)}\n" \
+  "   Found: #{matches.length} suspicious pattern(s)\n" \
+  "   Fix: Replace with meaningful assertions that test actual behavior"
+end
 
 # === ERROR PATTERNS ===
 
@@ -86,6 +146,51 @@ def track_edit(tool_name, tool_input, tool_response)
   end
 end
 
+# === MCP VERIFICATION TRACKING ===
+# Track successful MCP tool calls to verify connectivity
+
+def track_mcp_verification(tool_name, success)
+  # Find which MCP this tool belongs to
+  mcp_name = nil
+  MCP_VERIFICATION_PATTERNS.each do |mcp, pattern|
+    if tool_name.match?(pattern)
+      mcp_name = mcp
+      break
+    end
+  end
+
+  return unless mcp_name
+
+  StateManager.update(:mcp_health) do |health|
+    health[:mcps] ||= {}
+    health[:mcps][mcp_name] ||= { verified: false, last_success: nil, last_failure: nil, failure_count: 0 }
+
+    if success
+      health[:mcps][mcp_name][:verified] = true
+      health[:mcps][mcp_name][:last_success] = Time.now.iso8601
+      # Don't reset failure_count - it's historical data
+
+      # Check if ALL MCPs are now verified
+      all_verified = MCP_VERIFICATION_PATTERNS.keys.all? do |mcp|
+        health[:mcps][mcp] && health[:mcps][mcp][:verified]
+      end
+
+      if all_verified && !health[:verified_this_session]
+        health[:verified_this_session] = true
+        health[:last_verified] = Time.now.iso8601
+        warn '✅ ALL MCPs VERIFIED - edits now allowed'
+      end
+    else
+      health[:mcps][mcp_name][:last_failure] = Time.now.iso8601
+      health[:mcps][mcp_name][:failure_count] = (health[:mcps][mcp_name][:failure_count] || 0) + 1
+    end
+
+    health
+  end
+rescue StandardError => e
+  warn "⚠️  MCP tracking error: #{e.message}"
+end
+
 def track_failure(tool_name, tool_response)
   return unless FAILURE_TOOLS.include?(tool_name)
 
@@ -121,37 +226,6 @@ def reset_failure_count(tool_name)
     # Don't clear last_error if breaker is already tripped (preserves context)
     c[:last_error] = nil unless c[:tripped]
     c
-  end
-end
-
-def track_enforcement_block(tool_name, blocked_reason)
-  return unless blocked_reason
-
-  signature = blocked_reason.lines.first&.strip || 'UNKNOWN'
-
-  StateManager.update(:enforcement) do |e|
-    e[:blocks] ||= []
-    e[:blocks] << {
-      signature: signature,
-      tool: tool_name,
-      at: Time.now.iso8601
-    }
-
-    # Keep only last 10 blocks
-    e[:blocks] = e[:blocks].last(10)
-
-    # Check for enforcement loop (5x same block)
-    recent = e[:blocks].last(5)
-    if recent.length >= 5
-      sigs = recent.map { |b| b[:signature] }
-      if sigs.uniq.length == 1
-        e[:halted] = true
-        e[:halted_at] = Time.now.iso8601
-        e[:halted_reason] = "5x consecutive: #{sigs.first}"
-      end
-    end
-
-    e
   end
 end
 
@@ -293,6 +367,9 @@ def process_result(tool_name, tool_input, tool_response)
     # Track failure (legacy count)
     track_failure(tool_name, tool_response)
 
+    # === MCP VERIFICATION: Track failures for MCP tools ===
+    track_mcp_verification(tool_name, false)
+
     # === INTELLIGENCE: Track by signature (3x same = trip, even with successes) ===
     response_str = tool_response.to_s[0..200]
     track_error_signature(error_sig, tool_name, response_str)
@@ -305,10 +382,38 @@ def process_result(tool_name, tool_input, tool_response)
     reset_failure_count(tool_name)
     track_edit(tool_name, tool_input, tool_response)
 
+    # === MCP VERIFICATION: Track successes for MCP tools ===
+    track_mcp_verification(tool_name, true)
+
+    # === RULE #7: Tautology detection for test files ===
+    tautology_warning = check_tautologies(tool_name, tool_input)
+    warn tautology_warning if tautology_warning
+
     # === INTELLIGENCE: Log action for pattern learning ===
     log_action_for_learning(tool_name, tool_input, true, nil)
 
     log_action(tool_name, 'success')
+
+    # === GIT PUSH REMINDER ===
+    # After successful git commit, check if push is needed
+    if tool_name == 'Bash'
+      command = tool_input['command'] || tool_input[:command] || ''
+      if command.match?(/git\s+commit/i) && !command.match?(/git\s+push/i)
+        # Check for unpushed commits
+        ahead_check = `git status 2>/dev/null | grep -o "ahead of.*by [0-9]* commit"`
+        unless ahead_check.empty?
+          warn ''
+          warn '🚨 GIT PUSH REMINDER 🚨'
+          warn "   You committed but haven't pushed!"
+          warn "   Status: #{ahead_check.strip}"
+          warn ''
+          warn '   → Run: git push'
+          warn '   → READ ALL DOCUMENTATION before claiming done'
+          warn '   → Verify README is accurate and up to date'
+          warn ''
+        end
+      end
+    end
   end
 
   0  # PostToolUse always returns 0 (tool already executed)
@@ -517,6 +622,49 @@ def self_test
   else
     failed += 1
     warn "  FAIL: MCP success should return nil, got #{result}"
+  end
+
+  # === TAUTOLOGY DETECTION TESTS (Rule #7) ===
+  warn ''
+  warn 'Testing tautology detection (Rule #7):'
+
+  # Test: Detects #expect(true) in test file
+  result = check_tautologies('Edit', {
+    'file_path' => '/path/Tests/MyTests.swift',
+    'new_string' => '@Test func bad() { #expect(true) }'
+  })
+  if result&.include?('RULE #7 WARNING')
+    passed += 1
+    warn '  PASS: Detects #expect(true) in test file'
+  else
+    failed += 1
+    warn "  FAIL: Should detect tautology, got #{result.inspect}"
+  end
+
+  # Test: Ignores tautology in non-test file
+  result = check_tautologies('Edit', {
+    'file_path' => '/path/Sources/Main.swift',
+    'new_string' => 'let x = true; #expect(true)'
+  })
+  if result.nil?
+    passed += 1
+    warn '  PASS: Ignores tautology in non-test file'
+  else
+    failed += 1
+    warn "  FAIL: Should ignore non-test file, got #{result.inspect}"
+  end
+
+  # Test: Allows real assertions
+  result = check_tautologies('Edit', {
+    'file_path' => '/path/Tests/ValidTests.swift',
+    'new_string' => '@Test func good() { #expect(result == 42) }'
+  })
+  if result.nil?
+    passed += 1
+    warn '  PASS: Allows real assertions in test file'
+  else
+    failed += 1
+    warn "  FAIL: Real assertion should be allowed, got #{result.inspect}"
   end
 
   # === CLEANUP: Reset circuit breaker only (don't reset research - breaks normal ops) ===

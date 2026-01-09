@@ -31,32 +31,14 @@ class SyncCheck
   SETTINGS_TEMPLATE = File.join(SANEPROCESS_ROOT, '.claude', 'settings.json')
 
   # Hooks that should be identical across all projects
+  # PRIMARY HOOKS (new unified system)
   SYNC_HOOKS = %w[
-    audit_logger.rb
-    bypass.rb
-    circuit_breaker.rb
-    deeper_look_trigger.rb
-    edit_validator.rb
-    failure_tracker.rb
-    path_rules.rb
-    pattern_learner.rb
-    process_enforcer.rb
-    prompt_analyzer.rb
-    research_tracker.rb
-    rule_tracker.rb
-    saneloop_enforcer.rb
+    saneprompt.rb
+    sanetools.rb
+    sanetrack.rb
+    sanestop.rb
     session_start.rb
-    session_summary_validator.rb
-    shortcut_detectors.rb
-    skill_validator.rb
-    sop_mapper.rb
     state_signer.rb
-    stop_validator.rb
-    test_quality_checker.rb
-    two_fix_reminder.rb
-    verify_reminder.rb
-    version_mismatch.rb
-    research_before_code.rb
   ].freeze
 
   # Rules that should be synced

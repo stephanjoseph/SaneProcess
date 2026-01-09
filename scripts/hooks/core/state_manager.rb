@@ -81,9 +81,37 @@ module StateManager
       halted_at: nil,
       halted_reason: nil
     },
-    # === INTELLIGENCE: New sections for pattern learning ===
+    # Edit attempt tracking (prevents "no big deal" syndrome)
+    edit_attempts: {
+      count: 0,
+      last_attempt: nil,
+      reset_at: nil
+    },
+    # === INTELLIGENCE: Pattern learning sections ===
     action_log: [],  # Last 20 actions for correlation
-    learnings: []    # Learned patterns from corrections
+    learnings: [],   # Learned patterns from user corrections
+    patterns: {
+      weak_spots: {},     # { "rule_N" => count } - rules frequently violated
+      triggers: {},       # { "word" => ["rule_N"] } - words that predict violations
+      strengths: [],      # ["rule_N"] - rules with 100% compliance
+      session_scores: []  # Last 10 SOP scores for variance detection
+    },
+    # === MCP VERIFICATION SYSTEM ===
+    # Tracks MCP health and ensures all MCPs verified before edits
+    mcp_health: {
+      verified_this_session: false,
+      last_verified: nil,
+      mcps: {
+        memory: { verified: false, last_success: nil, last_failure: nil, failure_count: 0 },
+        apple_docs: { verified: false, last_success: nil, last_failure: nil, failure_count: 0 },
+        context7: { verified: false, last_success: nil, last_failure: nil, failure_count: 0 },
+        github: { verified: false, last_success: nil, last_failure: nil, failure_count: 0 }
+      }
+    },
+    # === REFUSAL TO READ TRACKING ===
+    # Detects when AI is blocked repeatedly for same reason but keeps trying
+    # instead of reading the message and following instructions
+    refusal_tracking: {}
   }.freeze
 
   class << self

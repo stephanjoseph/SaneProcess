@@ -22,4 +22,16 @@ You are working on **SaneProcess** - the SOP enforcement framework itself.
 - Maintain consistency with SaneBar/SaneVideo implementations
 
 ## Memory
-Run `mcp__memory__read_graph` at session start for cross-project context.
+
+**Two memory systems available:**
+
+1. **Memory MCP** - Curated knowledge graph
+   - Run `mcp__memory__read_graph` at session start
+   - Cross-project context, bug patterns
+
+2. **claude-mem** - Automatic session history
+   - Auto-captures tool usage and decisions
+   - Search with `mem-search` skill
+   - Web viewer: http://localhost:37777/
+
+When user says "check memory", check BOTH sources.

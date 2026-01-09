@@ -18,9 +18,13 @@ require_relative '../actions/logger'
 
 # Helper: Determine outcome from output
 def determine_outcome(output)
-  return 'unknown' if output.nil? || output.empty?
-  return 'blocked' if output.match?(/BLOCKED|exit 2|error:/i)
-  return 'warning' if output.match?(/WARNING/i)
+  return 'unknown' if output.nil?
+
+  # Convert to string if needed (Claude Code sends Hash for tool_response)
+  text = output.is_a?(Hash) ? output.to_s : output.to_s
+  return 'unknown' if text.empty?
+  return 'blocked' if text.match?(/BLOCKED|exit 2|error:/i)
+  return 'warning' if text.match?(/WARNING/i)
 
   'success'
 end

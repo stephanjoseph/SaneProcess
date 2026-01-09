@@ -33,9 +33,6 @@ SANELOOP_ARCHIVE_DIR = File.join(CLAUDE_DIR, 'saneloop-archive')
 EDIT_STATE_FILE = File.join(CLAUDE_DIR, 'edit_state.json')
 SUMMARY_VALIDATED_FILE = File.join(CLAUDE_DIR, 'summary_validated.json')
 
-# SaneLoop is stale if older than this (hours)
-STALE_SANELOOP_HOURS = 4
-
 def ensure_claude_dir
   FileUtils.mkdir_p(CLAUDE_DIR)
 
@@ -114,51 +111,38 @@ def clear_stale_satisfaction
   end
 end
 
-# Detect and handle stale SaneLoop
+# Detect and handle SaneLoop from previous session
+# User requirement: saneloops do NOT persist across sessions - always archive
 def handle_stale_saneloop
   return unless File.exist?(SANELOOP_STATE_FILE)
 
   state = JSON.parse(File.read(SANELOOP_STATE_FILE), symbolize_names: true)
   return unless state[:active]
 
-  # Check if SaneLoop is stale (started more than STALE_SANELOOP_HOURS ago)
   started_at = Time.parse(state[:started_at]) rescue nil
-  return unless started_at
+  hours_old = started_at ? ((Time.now - started_at) / 3600.0).round(1) : 0
 
-  hours_old = (Time.now - started_at) / 3600.0
+  # Archive ANY saneloop from previous session - no persistence allowed
+  FileUtils.mkdir_p(SANELOOP_ARCHIVE_DIR)
+  task_slug = (state[:task] || 'unknown').gsub(/[^a-zA-Z0-9]+/, '_')[0..30]
+  archive_name = "#{Time.now.strftime('%Y%m%d_%H%M%S')}_SESSION_END_#{task_slug}.json"
+  archive_path = File.join(SANELOOP_ARCHIVE_DIR, archive_name)
 
-  if hours_old > STALE_SANELOOP_HOURS
-    # Archive the stale SaneLoop
-    FileUtils.mkdir_p(SANELOOP_ARCHIVE_DIR)
-    task_slug = (state[:task] || 'unknown').gsub(/[^a-zA-Z0-9]+/, '_')[0..30]
-    archive_name = "#{Time.now.strftime('%Y%m%d_%H%M%S')}_STALE_#{task_slug}.json"
-    archive_path = File.join(SANELOOP_ARCHIVE_DIR, archive_name)
+  state[:archived_at] = Time.now.iso8601
+  state[:completed] = false
+  state[:completion_note] = "SESSION ENDED: Archived on new session start (was #{hours_old}h old)"
+  File.write(archive_path, JSON.pretty_generate(state))
+  File.delete(SANELOOP_STATE_FILE)
 
-    state[:archived_at] = Time.now.iso8601
-    state[:completed] = false
-    state[:completion_note] = "STALE: Abandoned after #{hours_old.round(1)} hours - archived on new session start"
-    File.write(archive_path, JSON.pretty_generate(state))
-    File.delete(SANELOOP_STATE_FILE)
-
-    warn ''
-    warn '⚠️  STALE SANELOOP DETECTED AND ARCHIVED'
-    warn "   Task: #{state[:task]}"
-    warn "   Started: #{hours_old.round(1)} hours ago"
-    warn "   Status: Never completed (no rating presented)"
-    warn ''
-    warn '   Starting fresh. Use SaneMaster saneloop start for new tasks.'
-    warn ''
-  else
-    # SaneLoop is recent but from different session - warn but keep
-    warn ''
-    warn '📋 ACTIVE SANELOOP FROM PREVIOUS SESSION'
-    warn "   Task: #{state[:task]}"
-    warn "   Iteration: #{state[:iteration]}/#{state[:max_iterations]}"
-    warn ''
-    warn '   Continue with: ./Scripts/SaneMaster.rb saneloop status'
-    warn '   Or cancel with: ./Scripts/SaneMaster.rb saneloop cancel'
-    warn ''
-  end
+  warn ''
+  warn '⚠️  PREVIOUS SESSION SANELOOP ARCHIVED'
+  warn "   Task: #{state[:task]}"
+  warn "   Age: #{hours_old} hours"
+  warn "   Status: Never completed (session ended)"
+  warn ''
+  warn '   SaneLoops do not persist across sessions.'
+  warn '   Start fresh: ./Scripts/SaneMaster.rb saneloop start "Task" --promise "Done"'
+  warn ''
 rescue StandardError => e
   warn "⚠️  Error checking SaneLoop state: #{e.message}"
 end
@@ -183,24 +167,226 @@ def output_session_context
     warn "📁 Pattern rules: #{rule_count} loaded" if rule_count.positive?
   end
 
-  # Check for memory file and remind to load
-  memory_file = File.join(CLAUDE_DIR, 'memory.json')
-  if File.exist?(memory_file)
-    warn '🧠 Memory available - run mcp__memory__read_graph at session start'
-  end
+  # Check memory health (using cached data if available)
+  check_memory_health
 
   warn ''
 end
 
+# Check for pending MCP actions that need resolution
+MEMORY_STAGING_FILE = File.join(CLAUDE_DIR, 'memory_staging.json')
+
+def check_pending_mcp_actions
+  pending = []
+
+  # Check memory staging
+  if File.exist?(MEMORY_STAGING_FILE)
+    begin
+      staging = JSON.parse(File.read(MEMORY_STAGING_FILE))
+      if staging['needs_memory_update']
+        pending << {
+          type: 'memory_staging',
+          message: "Memory staging needs saving: #{staging['suggested_entity']&.dig('name') || 'learnings'}",
+          action: 'Call mcp__memory__create_entities then delete memory_staging.json'
+        }
+      end
+    rescue StandardError
+      # Ignore parse errors
+    end
+  end
+
+  if pending.any?
+    warn ''
+    warn '🚨 PENDING MCP ACTIONS - MUST RESOLVE BEFORE WORK'
+    warn ''
+    pending.each do |p|
+      warn "   ⚠️  #{p[:message]}"
+      warn "      Action: #{p[:action]}"
+    end
+    warn ''
+    warn '   EDITS WILL BE BLOCKED until these are resolved.'
+    warn ''
+  end
+
+  pending
+end
+
+# Memory health check on cached data
+# Thresholds match memory.rb: 60 entities, 8000 tokens
+ENTITY_WARN = 40  # Lower threshold for early warning
+TOKEN_WARN = 6000
+
+def check_memory_health
+  memory_file = File.join(CLAUDE_DIR, 'memory.json')
+
+  unless File.exist?(memory_file)
+    warn '🧠 No cached memory - run mcp__memory__read_graph to load'
+    return
+  end
+
+  begin
+    memory = JSON.parse(File.read(memory_file))
+    entities = memory['entities'] || []
+    entity_count = entities.count
+
+    # Estimate tokens (~4 chars per token)
+    est_tokens = (File.size(memory_file) / 4.0).round
+
+    # Check for verbose entities (>15 observations each)
+    verbose = entities.count { |e| (e['observations'] || []).count > 15 }
+
+    if entity_count > ENTITY_WARN || est_tokens > TOKEN_WARN || verbose > 3
+      warn ''
+      warn '⚠️  MEMORY BLOAT DETECTED'
+      warn "   Entities: #{entity_count}/#{ENTITY_WARN} | Tokens: ~#{est_tokens}/#{TOKEN_WARN}"
+      warn "   Verbose entities (>15 obs): #{verbose}" if verbose > 0
+      warn ''
+      warn '   Run: ./Scripts/SaneMaster.rb mh        # Full health report'
+      warn '   Run: ./Scripts/SaneMaster.rb mcompact  # Trim verbose entities'
+      warn ''
+    else
+      warn "🧠 Memory: #{entity_count} entities, ~#{est_tokens} tokens"
+    end
+  rescue StandardError => e
+    warn "🧠 Memory cache unreadable: #{e.message}"
+  end
+end
+
+# === MCP VERIFICATION SYSTEM ===
+# Reset verification for new session and prompt Claude to verify MCPs
+
+MCP_VERIFICATION_TOOLS = {
+  memory: 'mcp__memory__read_graph',
+  apple_docs: 'mcp__apple-docs__search_apple_docs',
+  context7: 'mcp__context7__resolve-library-id',
+  github: 'mcp__github__search_repositories'
+}.freeze
+
+def reset_mcp_verification
+  require_relative 'core/state_manager'
+
+  # Reset verification flag for new session (MCPs must re-verify)
+  StateManager.update(:mcp_health) do |health|
+    health[:verified_this_session] = false
+    # Keep historical data but reset per-session verification
+    health[:mcps].each do |_mcp, data|
+      data[:verified] = false if data.is_a?(Hash)
+    end
+    health
+  end
+rescue StandardError => e
+  warn "⚠️  Could not reset MCP verification: #{e.message}"
+end
+
+def show_mcp_verification_status
+  require_relative 'core/state_manager'
+
+  health = StateManager.get(:mcp_health)
+  mcps = health[:mcps] || {}
+
+  # Check for any previous failures
+  failures = mcps.select { |_, data| data.is_a?(Hash) && data[:failure_count].to_i > 0 }
+
+  warn ''
+  warn '🔌 MCP VERIFICATION REQUIRED'
+  warn ''
+  warn '   Before editing, verify all 4 MCPs are operational:'
+  warn ''
+
+  MCP_VERIFICATION_TOOLS.each do |mcp, tool|
+    data = mcps[mcp] || {}
+    status = if data[:last_failure] && !data[:last_success]
+               '❌ FAILED last session'
+             elsif data[:failure_count].to_i > 2
+               "⚠️  #{data[:failure_count]} failures"
+             else
+               '⬜ Not verified'
+             end
+    warn "   #{mcp}: #{status}"
+    warn "      → #{tool}"
+  end
+
+  warn ''
+  warn '   EDITS BLOCKED until all MCPs verified this session.'
+  warn '   Run each tool once to prove connectivity.'
+  warn ''
+
+  if failures.any?
+    warn '   ⚠️  MCPs with previous failures:'
+    failures.each do |mcp, data|
+      warn "      #{mcp}: #{data[:failure_count]} failures, last: #{data[:last_failure]}"
+    end
+    warn ''
+  end
+end
+
+# Debug logging for troubleshooting startup issues
+DEBUG_LOG = File.join(CLAUDE_DIR, 'session_start_debug.log')
+
+def log_debug(msg)
+  File.open(DEBUG_LOG, 'a') { |f| f.puts "[#{Time.now.iso8601}] #{msg}" }
+rescue StandardError
+  # Ignore logging errors
+end
+
+# Build context for Claude (injected via stdout JSON)
+def build_session_context
+  context_parts = []
+  project_name = File.basename(PROJECT_DIR)
+  sop_file = find_sop_file
+
+  context_parts << "# [SaneProcess] Session Started"
+  context_parts << "Project: #{project_name}"
+  context_parts << "SOP: #{sop_file}" if sop_file
+
+  # Check memory health
+  memory_file = File.join(CLAUDE_DIR, 'memory.json')
+  if File.exist?(memory_file)
+    begin
+      memory = JSON.parse(File.read(memory_file))
+      entities = memory['entities'] || []
+      context_parts << "Memory: #{entities.count} entities cached"
+    rescue StandardError
+      # Ignore
+    end
+  end
+
+  context_parts.join("\n")
+end
+
 # Main execution
 begin
+  log_debug "Starting session_start hook"
   ensure_claude_dir
+  log_debug "ensure_claude_dir done"
   reset_session_state
+  log_debug "reset_session_state done"
   clear_stale_satisfaction
+  log_debug "clear_stale_satisfaction done"
   handle_stale_saneloop
-  output_session_context
+  log_debug "handle_stale_saneloop done"
+  reset_mcp_verification      # Reset MCP verification for new session
+  log_debug "reset_mcp_verification done"
+  output_session_context      # User-facing messages to stderr
+  log_debug "output_session_context done"
+  check_pending_mcp_actions   # Alert user to pending actions
+  log_debug "check_pending_mcp_actions done"
+  show_mcp_verification_status # Show MCP status and prompt
+  log_debug "show_mcp_verification_status done"
+
+  # Output JSON to stdout for Claude Code to inject into context
+  # This is what makes SessionStart a "success" vs "error" in Claude Code
+  result = {
+    additionalContext: build_session_context
+  }
+  puts JSON.generate(result)
+  log_debug "JSON output written - SUCCESS"
 rescue StandardError => e
+  log_debug "ERROR: #{e.class}: #{e.message}"
+  log_debug e.backtrace&.first(5)&.join("\n") || "No backtrace"
   warn "⚠️  Session start error: #{e.message}"
+  # Still output valid JSON even on error so Claude Code doesn't show "error"
+  puts JSON.generate({ additionalContext: "Session start encountered an error: #{e.message}" })
 end
 
 exit 0
