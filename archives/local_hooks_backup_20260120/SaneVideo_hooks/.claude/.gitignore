@@ -1,0 +1,4 @@
+# Local state for hook development (do not commit)
+state.json
+state.json.lock
+

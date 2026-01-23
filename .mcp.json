@@ -1,0 +1,37 @@
+{
+  "mcpServers": {
+    "apple-docs": {
+      "command": "node",
+      "args": [
+        "/Users/sj/Dev/apple-docs-mcp-local/dist/index.js"
+      ]
+    },
+    "github": {
+      "command": "node",
+      "args": [
+        "/Users/sj/.npm-global/lib/node_modules/@modelcontextprotocol/server-github/dist/index.js"
+      ],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
+      }
+    },
+    "context7": {
+      "command": "node",
+      "args": [
+        "/Users/sj/.npm-global/lib/node_modules/@upstash/context7-mcp/dist/index.js"
+      ]
+    },
+    "XcodeBuildMCP": {
+      "command": "node",
+      "args": [
+        "/Users/sj/Dev/xcodebuild-mcp-local/build/index.js"
+      ]
+    },
+    "macos-automator": {
+      "command": "node",
+      "args": [
+        "/Users/sj/.npm-global/lib/node_modules/@steipete/macos-automator-mcp/dist/server.js"
+      ]
+    }
+  }
+}
