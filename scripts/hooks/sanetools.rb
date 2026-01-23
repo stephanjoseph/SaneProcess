@@ -52,7 +52,10 @@ BOOTSTRAP_TOOL_PATTERN = Regexp.union(
 ).freeze
 
 # === MUTATION PATTERNS (require research) ===
-# NOTE: Memory MCP patterns removed - using Sane-Mem instead
+# NOTE: Memory MCP patterns removed Jan 2026 - using Sane-Mem (localhost:37777) instead
+# GLOBAL_MUTATION_PATTERN is empty now but kept for API compatibility
+
+GLOBAL_MUTATION_PATTERN = /(?!)/.freeze  # Matches nothing (memory MCP removed)
 
 EXTERNAL_MUTATION_PATTERN = Regexp.union(
   /^mcp__github__create_/,

@@ -188,6 +188,30 @@ module SaneToolsChecks
         end
       end
 
+      # CRITICAL: Protect Sane-Mem from being killed (loses all memory!)
+      sanemem_kill_patterns = [
+        /kill.*claude-?mem/i,
+        /kill.*sane-?mem/i,
+        /killall.*claude-?mem/i,
+        /killall.*sane-?mem/i,
+        /pkill.*claude-?mem/i,
+        /pkill.*sane-?mem/i,
+        /kill.*37777/i,
+        /launchctl.*(unload|remove).*claudemem/i,
+        /kill.*worker-service/i,
+        /killall.*bun.*worker/i
+      ]
+
+      if sanemem_kill_patterns.any? { |p| command.match?(p) }
+        return "SANE-MEM KILL BLOCKED\n" \
+               "Killing Sane-Mem loses ALL accumulated memory and observations.\n" \
+               "Two days of learnings were lost on Jan 24 2026 due to this.\n\n" \
+               "If Sane-Mem is misbehaving:\n" \
+               "  1. Check logs: tail ~/.claude-mem/logs/worker-launchd*.log\n" \
+               "  2. Restart (safe): launchctl kickstart -k gui/$(id -u)/com.claudemem.worker\n" \
+               "  3. Ask the user before taking any action"
+      end
+
       if command.match?(bash_file_write_pattern)
         target_match = command.match(/(?:>|>>|tee\s+)\s*([^\s|&;]+)/)
         target = target_match ? target_match[1] : nil
