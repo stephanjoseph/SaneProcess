@@ -29,7 +29,7 @@ sign_update /path/to/{App}-{version}.dmg --account "EdDSA Private Key"
 
 ```bash
 CF_TOKEN=$(security find-generic-password -s cloudflare -a api_token -w)
-CF_ACCOUNT="2c267ab06352ba2522114c3081a8c5fa"
+CF_ACCOUNT="$CLOUDFLARE_ACCOUNT_ID"
 
 curl -X PUT "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/r2/buckets/sanebar-downloads/objects/{App}-{version}.dmg" \
   -H "Authorization: Bearer $CF_TOKEN" \
@@ -55,7 +55,7 @@ Edit `docs/appcast.xml`:
 cp docs/appcast.xml website/appcast.xml
 
 # Deploy to Cloudflare Pages
-CLOUDFLARE_ACCOUNT_ID=2c267ab06352ba2522114c3081a8c5fa \
+CLOUDFLARE_ACCOUNT_ID=$CLOUDFLARE_ACCOUNT_ID \
   npx wrangler pages deploy ./website --project-name={app}-site \
   --commit-dirty=true --commit-message="Release v{version}"
 
@@ -101,7 +101,7 @@ curl -X POST "https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records" 
 ## R2 Bucket
 
 - **Name**: `sanebar-downloads`
-- **Account**: `2c267ab06352ba2522114c3081a8c5fa`
+- **Account**: `$CLOUDFLARE_ACCOUNT_ID`
 - **Usage**: Stores all DMGs for all apps
 
 ## Critical Rules
@@ -111,3 +111,5 @@ curl -X POST "https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records" 
 3. **ALWAYS sign DMGs** with Sparkle EdDSA
 4. **ALWAYS verify** downloads work before announcing release
 5. **Use `wrangler`** for Pages deploy and R2 uploads (Cloudflare API for everything else)
+6. **ONE Sparkle key for ALL SaneApps** — keychain account `"EdDSA Private Key"`, public key `7Pl/8cwfb2vm4Dm65AByslkMCScLJ9tbGlwGGx81qYU=`. NEVER generate per-project keys.
+7. **Verify SUPublicEDKey in built Info.plist** matches the shared key before shipping

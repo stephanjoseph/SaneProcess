@@ -11,7 +11,7 @@ set -e
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PROJECT_NAME="$(basename "$PROJECT_DIR")"
 SITE_NAME="$(echo "$PROJECT_NAME" | tr '[:upper:]' '[:lower:]')-site"
-CF_ACCOUNT_ID="2c267ab06352ba2522114c3081a8c5fa"
+CF_ACCOUNT_ID="${CLOUDFLARE_ACCOUNT_ID:?Set CLOUDFLARE_ACCOUNT_ID env var}"
 WEBSITE_DIR="$PROJECT_DIR/docs"
 
 echo "--- Publishing $PROJECT_NAME website to Cloudflare Pages ---"

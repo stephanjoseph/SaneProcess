@@ -193,12 +193,10 @@ Generate new key pair:
 
 Store private key in Keychain:
 ```bash
-security add-generic-password \
-  -s "https://sparkle-project.org" \
-  -a "ed25519" \
-  -w "<base64-private-key>" \
-  -T "" \
-  -U
+## IMPORTANT: All SaneApps share ONE Sparkle key (account: "EdDSA Private Key").
+## Do NOT generate a new key per project. The shared key already exists in Keychain.
+## To verify: security find-generic-password -s "https://sparkle-project.org" -a "EdDSA Private Key"
+## Public key: 7Pl/8cwfb2vm4Dm65AByslkMCScLJ9tbGlwGGx81qYU=
 ```
 
 Or store in `fastlane/keys/sparkle_private_key.txt` (git-ignored).
@@ -448,7 +446,7 @@ APP_NAME="ProjectName"
 BUNDLE_ID="com.projectname.app"
 TEAM_ID="M78L6FXD48"
 SIGNING_IDENTITY="Developer ID Application: Stephan Joseph (M78L6FXD48)"
-SPARKLE_KEY_ACCOUNT="ed25519"  # Keychain account for Sparkle private key
+SPARKLE_KEY_ACCOUNT="EdDSA Private Key"  # Shared across all SaneApps — DO NOT create per-project keys
 DMG_HOSTING_URL="https://projectname.com/downloads"  # Where paid DMGs are served
 
 # Parse arguments
@@ -559,7 +557,7 @@ try! png.write(to: URL(fileURLWithPath: "scripts/dmg-resources/dmg-background.pn
 
 ### 5.1 Deploy Command
 ```bash
-CLOUDFLARE_ACCOUNT_ID=2c267ab06352ba2522114c3081a8c5fa \
+CLOUDFLARE_ACCOUNT_ID=$CLOUDFLARE_ACCOUNT_ID \
   npx wrangler pages deploy ./docs --project-name=projectname-site \
   --commit-dirty=true --commit-message="Deploy website"
 ```
