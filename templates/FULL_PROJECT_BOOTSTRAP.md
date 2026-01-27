@@ -135,9 +135,8 @@ ProjectName/
 │   ├── ISSUE_TEMPLATE/
 │   │   └── bug_report.yml
 │   └── PULL_REQUEST_TEMPLATE.md
-├── docs/                       # GitHub Pages
+├── docs/                       # Website (Cloudflare Pages)
 │   ├── index.html
-│   ├── CNAME
 │   ├── appcast.xml
 │   ├── robots.txt
 │   ├── sitemap.xml
@@ -292,7 +291,7 @@ packages:
       <pubDate>Mon, 20 Jan 2026 12:00:00 -0500</pubDate>
       <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
       <enclosure
-        url="https://github.com/sane-apps/ProjectName/releases/download/v1.0.0/ProjectName-1.0.0.dmg"
+        url="https://dist.projectname.com/updates/ProjectName-1.0.0.dmg"
         sparkle:version="1.0.0"
         sparkle:shortVersionString="1.0.0"
         length="2000000"
@@ -556,12 +555,16 @@ try! png.write(to: URL(fileURLWithPath: "scripts/dmg-resources/dmg-background.pn
 
 ---
 
-## Part 5: GitHub Pages Website
+## Part 5: Cloudflare Pages Website
 
-### 5.1 CNAME
+### 5.1 Deploy Command
+```bash
+CLOUDFLARE_ACCOUNT_ID=2c267ab06352ba2522114c3081a8c5fa \
+  npx wrangler pages deploy ./docs --project-name=projectname-site \
+  --commit-dirty=true --commit-message="Deploy website"
 ```
-projectname.com
-```
+
+**DO NOT use GitHub Pages.** All SaneApps websites use Cloudflare Pages.
 
 ### 5.2 robots.txt
 ```
@@ -854,10 +857,11 @@ ps aux | grep claude | grep -v grep  # Check for stale processes
 9. Build must succeed
 
 ### Phase 4: Distribution Setup
-10. Set up `docs/` with CNAME, index.html skeleton
-11. Generate Sparkle keys, add to Info.plist
-12. Set up Lemon Squeezy store for $5 DMG sales
-13. Add alias to `~/.zshrc`
+10. Set up `docs/` with index.html skeleton
+11. Create Cloudflare Pages project and deploy website
+12. Generate Sparkle keys, add to Info.plist
+13. Set up Lemon Squeezy store for $5 DMG sales
+14. Add alias to `~/.zshrc`
 
 ### Phase 5: Release
 14. First release: `./scripts/release.sh`
