@@ -55,6 +55,7 @@ module StateManager
       is_task: false,
       is_big_task: false
     },
+    # Dynamic key: pending_research_write (set by sanetools, read/cleared by sanetrack_research)
     research: {
       memory: nil,
       docs: nil,

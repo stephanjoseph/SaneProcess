@@ -1,12 +1,13 @@
 # Research Cache
 
 > **Working scratchpad for research agents.** Check here before researching. Update after finding.
-> When findings become permanent knowledge, move them to ARCHITECTURE.md or DEVELOPMENT.md.
+> When findings become permanent knowledge, graduate them to ARCHITECTURE.md or DEVELOPMENT.md.
+> **Size cap: 200 lines.** If over cap, graduate oldest verified findings first.
 
 ---
 
 ## MCP Tool Inventory & Utilization Audit
-**Updated:** 2026-02-01 | **Status:** verified
+**Updated:** 2026-02-01 | **Status:** verified | **TTL:** 30d
 **Source:** ToolSearch across all 8 MCP servers
 
 ### Gemini (30+ tools — mostly unused)
@@ -50,7 +51,7 @@
 - Categories: browsers, mail, calendar, Finder, Terminal, accessibility
 
 ## Claude-Mem vs Serena Memories
-**Updated:** 2026-02-01 | **Status:** verified
+**Updated:** 2026-02-01 | **Status:** verified | **TTL:** 30d
 **Source:** ToolSearch + direct MCP testing
 
 | Aspect | Claude-Mem | Serena Memories |
@@ -65,7 +66,7 @@
 They're complementary, not duplicates. Claude-Mem is the automatic journal; Serena is the curated wiki.
 
 ## Subagent Capability Matrix
-**Updated:** 2026-02-01 | **Status:** verified
+**Updated:** 2026-02-01 | **Status:** verified | **TTL:** 30d
 **Source:** Task tool definition analysis
 
 | Agent Type | Write/Edit | Ask User | MCP Tools | Sub-Tasks | Default Model |

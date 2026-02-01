@@ -374,6 +374,9 @@ def process_tool(tool_name, tool_input)
   track_research(tool_name, tool_input)
   track_requirement_satisfaction(tool_name, tool_input)
 
+  # Capture research.md mtime before Task agents that might write to it
+  store_research_mtime_if_needed(tool_name, tool_input)
+
   # Check bash bypass
   if (reason = SaneToolsChecks.check_bash_bypass(tool_name, tool_input, BASH_FILE_WRITE_PATTERN))
     log_action(tool_name, true, reason)
@@ -449,6 +452,30 @@ def process_tool(tool_name, tool_input)
   # All checks passed
   log_action(tool_name, false)
   0
+end
+
+# === RESEARCH WRITE TRACKING ===
+
+def store_research_mtime_if_needed(tool_name, tool_input)
+  return unless tool_name == 'Task'
+
+  prompt = tool_input['prompt'] || tool_input[:prompt] || ''
+  return unless prompt.match?(/research\.md/i)
+
+  project_dir = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd
+  research_md = File.join(project_dir, '.claude', 'research.md')
+  mtime = File.exist?(research_md) ? File.mtime(research_md).iso8601 : nil
+
+  StateManager.update(:research) do |r|
+    r[:pending_research_write] = {
+      task_prompt_snippet: prompt[0..100],
+      pre_mtime: mtime,
+      started_at: Time.now.iso8601
+    }
+    r
+  end
+rescue StandardError
+  nil # Don't block on tracking errors
 end
 
 # === CLI UTILITIES ===

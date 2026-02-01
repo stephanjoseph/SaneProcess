@@ -72,6 +72,20 @@ module SaneToolsChecks
       expanded_path = File.expand_path(sanitized_path) rescue sanitized_path
       expanded_decoded = File.expand_path(decoded_path) rescue decoded_path
 
+      # Traversal detection: if input uses ".." to reach sensitive path segments, block it.
+      # The raw path may not resolve to /etc from this CWD, but from a different CWD it would.
+      # Intent is clear: traversal + sensitive target = block.
+      if sanitized_path.include?('..')
+        [sanitized_path, decoded_path].each do |raw|
+          if raw.match?(%r{(?:^|/)(?:etc|var|usr)(/|$)}) ||
+             raw.match?(%r{/\.(ssh|aws|gnupg)(/|$)})
+            return "BLOCKED PATH (traversal detected): #{path}\n" \
+                   "Path traversal to sensitive directory detected.\n" \
+                   "DO THIS: Use direct paths within the project."
+          end
+        end
+      end
+
       [sanitized_path, decoded_path, expanded_path, expanded_decoded].each do |p|
         if p.match?(BLOCKED_PATH_PATTERN)
           return "BLOCKED PATH: #{path}\n" \

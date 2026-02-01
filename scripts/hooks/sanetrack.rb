@@ -22,6 +22,7 @@ require 'fileutils'
 require 'time'
 require_relative 'core/state_manager'
 require_relative 'core/context_compact'
+require_relative 'sanetrack_research'
 
 LOG_FILE = File.expand_path('../../.claude/sanetrack.log', __dir__)
 
@@ -641,6 +642,9 @@ def process_result(tool_name, tool_input, tool_response)
   track_skill_invocation(tool_name, tool_input)
   track_subagent_spawn(tool_name, tool_input)
 
+  # === RESEARCH PROTOCOL: Validate research agent writes ===
+  SaneTrackResearch.validate_research_write(tool_name)
+
   # === INTELLIGENCE: Detect actual failures, not text matching ===
   error_sig = detect_actual_failure(tool_name, tool_response)
   is_error = !error_sig.nil?
@@ -667,6 +671,9 @@ def process_result(tool_name, tool_input, tool_response)
   else
     reset_failure_count(tool_name)
     track_edit(tool_name, tool_input, tool_response)
+
+    # === RESEARCH PROTOCOL: Check research.md size cap ===
+    SaneTrackResearch.check_research_size(tool_name, tool_input)
 
     # === RULE #4: Track test/verification commands ===
     track_verification(tool_name, tool_input)

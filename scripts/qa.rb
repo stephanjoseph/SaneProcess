@@ -100,6 +100,8 @@ class SaneProcessQA
     check_version_consistency
     check_urls
     run_hook_tests
+    run_self_tests
+    run_test_audit
 
     puts
     puts "═══════════════════════════════════════════════════════════════"
@@ -495,27 +497,99 @@ class SaneProcessQA
   end
 
   def run_hook_tests
-    print "Running hook tests... "
+    print "Running tier tests... "
 
     test_file = File.join(HOOKS_DIR, 'test', 'tier_tests.rb')
     unless File.exist?(test_file)
-      @warnings << "Hook tests not found at #{test_file}"
+      @warnings << "Tier tests not found at #{test_file}"
       puts "⚠️  Tests not found"
       return
     end
 
     result = `ruby #{test_file} 2>&1`
-    if $?.success?
-      # Extract test count from output
-      if result.match?(/(\d+) tests.*0 failures/)
-        puts "✅ All tests pass"
+    # Extract counts from summary
+    if (match = result.match(/TOTAL: (\d+)\/(\d+) passed(?:, (\d+) weak)?/))
+      passed = match[1].to_i
+      total = match[2].to_i
+      weak = match[3]&.to_i || 0
+      failed = total - passed
+
+      if failed == 0
+        weak_note = weak > 0 ? " (#{weak} weak)" : ''
+        puts "✅ #{passed}/#{total} passed#{weak_note}"
       else
-        puts "✅ Tests pass"
+        @errors << "Tier tests: #{failed} failed"
+        puts "❌ #{passed}/#{total} passed, #{failed} failed"
       end
+    elsif $?.success?
+      puts "✅ Tests pass"
     else
-      @errors << "Hook tests failed"
+      @errors << "Tier tests failed"
       puts "❌ Tests failed"
       puts result.lines.last(5).join if result.lines.count > 0
+    end
+  end
+
+  def run_self_tests
+    print "Running self-tests... "
+
+    hooks_with_self_test = %w[saneprompt sanetools sanetrack sanestop]
+    total_passed = 0
+    total_failed = 0
+    failures = []
+
+    hooks_with_self_test.each do |hook|
+      hook_path = File.join(HOOKS_DIR, "#{hook}.rb")
+      next unless File.exist?(hook_path)
+
+      result = `ruby #{hook_path} --self-test 2>&1`
+      if (match = result.match(/(\d+)\/(\d+)/))
+        passed = match[1].to_i
+        total = match[2].to_i
+        total_passed += passed
+        total_failed += (total - passed)
+        failures << "#{hook}: #{total - passed} failed" if total > passed
+      elsif $?.success?
+        # Can't parse count but it passed
+        total_passed += 1
+      else
+        total_failed += 1
+        failures << "#{hook}: self-test failed"
+      end
+    end
+
+    if total_failed == 0
+      puts "✅ #{total_passed} passed across #{hooks_with_self_test.length} hooks"
+    else
+      @errors << "Self-tests: #{failures.join(', ')}"
+      puts "❌ #{total_passed} passed, #{total_failed} failed"
+      failures.each { |f| puts "   #{f}" }
+    end
+  end
+
+  def run_test_audit
+    print "Running test audit... "
+
+    audit_file = File.join(HOOKS_DIR, 'test', 'test_audit.rb')
+    unless File.exist?(audit_file)
+      @warnings << "Test audit not found"
+      puts "⚠️  Not found"
+      return
+    end
+
+    result = `ruby #{audit_file} 2>&1`
+    if (match = result.match(/TOTAL: (\d+) strong, (\d+) weak/))
+      strong = match[1].to_i
+      weak = match[2].to_i
+      if weak == 0
+        puts "✅ #{strong} tests, all strong"
+      else
+        pct = ((strong.to_f / (strong + weak)) * 100).round(1)
+        @warnings << "#{weak} weak tests (#{pct}% assertion coverage)"
+        puts "⚠️  #{strong} strong, #{weak} weak (#{pct}%)"
+      end
+    else
+      puts "⚠️  Could not parse audit output"
     end
   end
 end
