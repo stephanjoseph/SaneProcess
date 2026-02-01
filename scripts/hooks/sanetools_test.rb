@@ -150,6 +150,101 @@ module SaneToolsTest
       warn '  SKIP: Not all research categories tracked'
     end
 
+    # === PLANNING ENFORCEMENT TESTS ===
+    warn ''
+    warn 'Testing planning enforcement:'
+
+    # Reset state for planning tests (must clear ALL blocking conditions)
+    StateManager.reset(:research)
+    StateManager.reset(:planning)
+    StateManager.reset(:edit_attempts)
+    StateManager.update(:mcp_health) { |h| h[:verified_this_session] = true; h }
+    StateManager.update(:session_docs) { |sd| sd[:required] = []; sd[:read] = []; sd }
+    StateManager.update(:requirements) { |r| r[:is_big_task] = false; r[:is_research_only] = false; r[:requested] = []; r[:satisfied] = []; r }
+
+    # Test: Planning required blocks edits
+    StateManager.update(:planning) { |p| p[:required] = true; p[:plan_approved] = false; p }
+    # Complete all research so planning is the only blocker
+    research_categories.keys.each do |cat|
+      StateManager.update(:research) { |r| r[cat] = { completed_at: Time.now.iso8601, tool: 'test', via_task: false }; r }
+    end
+
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_tool_proc.call('Edit', { 'file_path' => '/Users/sj/SaneProcess/test.swift' })
+    $stderr.reopen(original_stderr)
+
+    if exit_code == 2
+      passed += 1
+      warn '  PASS: Planning required blocks edits'
+    else
+      failed += 1
+      warn "  FAIL: Planning required should block edits, got exit #{exit_code}"
+    end
+
+    # Test: Planning required allows research tools
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_tool_proc.call('Read', { 'file_path' => '/Users/sj/SaneProcess/test.swift' })
+    $stderr.reopen(original_stderr)
+
+    if exit_code == 0
+      passed += 1
+      warn '  PASS: Planning required allows Read'
+    else
+      failed += 1
+      warn "  FAIL: Planning required should allow Read, got exit #{exit_code}"
+    end
+
+    # Test: Plan approval unblocks edits
+    StateManager.update(:planning) { |p| p[:plan_approved] = true; p }
+
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_tool_proc.call('Edit', { 'file_path' => '/Users/sj/SaneProcess/test.swift' })
+    $stderr.reopen(original_stderr)
+
+    if exit_code == 0
+      passed += 1
+      warn '  PASS: Plan approval unblocks edits'
+    else
+      failed += 1
+      warn "  FAIL: Plan approval should unblock edits, got exit #{exit_code}"
+    end
+
+    # Test: Edit limit triggers re-planning
+    StateManager.reset(:planning)
+    StateManager.reset(:edit_attempts)
+    StateManager.reset(:research)
+    StateManager.update(:planning) { |p| p[:required] = true; p[:plan_approved] = true; p }
+    StateManager.update(:edit_attempts) { |a| a[:count] = 3; a }
+    StateManager.update(:mcp_health) { |h| h[:verified_this_session] = true; h }
+    StateManager.update(:session_docs) { |sd| sd[:required] = []; sd[:read] = []; sd }
+    StateManager.update(:requirements) { |r| r[:is_big_task] = false; r[:is_research_only] = false; r[:requested] = []; r[:satisfied] = []; r }
+    # Research must be complete for edit limit to be the blocker
+    research_categories.keys.each do |cat|
+      StateManager.update(:research) { |r| r[cat] = { completed_at: Time.now.iso8601, tool: 'test', via_task: false }; r }
+    end
+
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_tool_proc.call('Edit', { 'file_path' => '/Users/sj/SaneProcess/test.swift' })
+    $stderr.reopen(original_stderr)
+
+    planning_after = StateManager.get(:planning)
+    if exit_code == 2 && planning_after[:plan_approved] == false && planning_after[:replan_count] == 1
+      passed += 1
+      warn '  PASS: Edit limit triggers re-planning'
+    else
+      failed += 1
+      warn "  FAIL: Edit limit replan - exit=#{exit_code}, approved=#{planning_after[:plan_approved]}, replan=#{planning_after[:replan_count]}"
+    end
+
+    # Cleanup planning tests
+    StateManager.reset(:planning)
+    StateManager.reset(:edit_attempts)
+    StateManager.reset(:research)
+
     # === JSON INTEGRATION TESTS ===
     warn ''
     warn 'Testing JSON parsing (integration):'

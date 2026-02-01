@@ -278,8 +278,7 @@ module SaneToolsChecks
 
       unless complete
         return "SUBAGENT BYPASS BLOCKED\n" \
-               "Task appears to be for editing: #{prompt[0..50]}...\n" \
-               "Complete research first (5 categories)."
+               "Task for editing: #{prompt[0..50]}... Complete research first."
       end
 
       nil
@@ -307,14 +306,11 @@ module SaneToolsChecks
         end
       end.join("\n")
 
-      "RESEARCH INCOMPLETE - READ THIS CAREFULLY\n" \
+      "RESEARCH INCOMPLETE\n" \
       "Cannot edit until ALL 4 research categories are done.\n" \
-      "\n" \
       "MISSING (do these NOW):\n" \
       "#{missing_instructions}\n" \
-      "\n" \
-      "WHY: Rule #1 says VERIFY BEFORE YOU TRY.\n" \
-      "The research prevents wasted attempts. Do it ONCE, succeed ONCE."
+      "Rule #1: VERIFY BEFORE YOU TRY. Research once, succeed once."
     end
 
     def check_external_mutations(tool_name, external_mutation_pattern, research_categories)
@@ -327,9 +323,8 @@ module SaneToolsChecks
 
       missing = research_categories.keys.reject { |cat| research[cat] }
       "EXTERNAL MUTATION BLOCKED\n" \
-      "Tool '#{tool_name}' affects external systems (GitHub).\n" \
-      "Complete research first. Missing: #{missing.join(', ')}\n" \
-      "Use mcp__github__get_* or mcp__github__list_* to understand state first."
+      "Tool '#{tool_name}' affects external systems. Research first.\n" \
+      "Missing: #{missing.join(', ')}. Use read-only tools to understand state first."
     end
 
     def check_circuit_breaker
@@ -340,6 +335,54 @@ module SaneToolsChecks
       "#{cb[:failures]} consecutive failures detected.\n" \
       "Last error: #{cb[:last_error]}\n" \
       "User must say 'reset breaker' to continue."
+    end
+
+    # === SESSION DOC ENFORCEMENT ===
+    # Block edit tools until required session docs have been read
+    def check_session_docs_read(tool_name, edit_tools)
+      return nil unless edit_tools.include?(tool_name)
+
+      session_docs = StateManager.get(:session_docs)
+      return nil unless session_docs[:enforced]
+
+      required = session_docs[:required] || []
+      return nil if required.empty?
+
+      already_read = session_docs[:read] || []
+      unread = required - already_read
+      return nil if unread.empty?
+
+      "READ REQUIRED DOCS FIRST\n" \
+      "Session docs must be read before editing.\n" \
+      "\n" \
+      "Unread (use Read tool on each):\n" \
+      "#{unread.map { |f| "  → #{f}" }.join("\n")}\n" \
+      "\n" \
+      "Already read: #{already_read.any? ? already_read.join(', ') : 'none'}\n" \
+      "\n" \
+      "WHY: These docs contain recent work context, SOPs, and gotchas.\n" \
+      "Skipping them leads to rediscovering known issues."
+    end
+
+    # === PLANNING ENFORCEMENT ===
+    # Block edit tools until user approves a plan
+    # Research/read tools always allowed (anti-loop design)
+    def check_planning_required(tool_name, edit_tools)
+      return nil unless edit_tools.include?(tool_name)
+
+      planning = StateManager.get(:planning)
+      return nil unless planning[:required]
+      return nil if planning[:plan_approved]
+
+      replan = planning[:replan_count].to_i
+      note = replan > 0 ? " (re-plan ##{replan})" : ''
+
+      "PLAN REQUIRED#{note}\n" \
+      "Show your approach and get user approval before editing.\n" \
+      "  1. Describe plan (files, changes, approach)\n" \
+      "  2. User says 'approved'/'go ahead'/'lgtm', or type: pa+\n" \
+      "  3. Or use EnterPlanMode\n" \
+      "Research tools still work. Only edits are blocked."
     end
 
     def check_enforcement_halted
@@ -432,6 +475,7 @@ module SaneToolsChecks
                    when /STATE.*BYPASS|STATE.*PROTECTED/i then 'state_bypass'
                    when /MCP.*VERIFICATION/i then 'mcp_verification'
                    when /SANELOOP REQUIRED/i then 'saneloop_required'
+                   when /READ REQUIRED DOCS/i then 'session_docs'
                    else 'other'
                    end
 
@@ -692,10 +736,7 @@ module SaneToolsChecks
                "#{pending_actions.map { |a| "  ⚠️  #{a}" }.join("\n")}\n"
       end
 
-      msg += "\n" \
-             "This ensures ALL systems are operational before you make changes.\n" \
-             "Call each unverified MCP tool once to proceed."
-
+      msg += "\nCall each unverified MCP tool once to proceed."
       msg
     end
 
@@ -723,25 +764,24 @@ module SaneToolsChecks
         return nil
       end
 
-      # At or over limit - reset research and block until FULL research is redone
+      # At or over limit - reset research AND revoke plan approval
       # If 3 edits didn't work, your understanding is wrong - research AGAIN
       StateManager.reset(:research)
 
-      "EDIT ATTEMPT LIMIT REACHED\n" \
-      "You've made #{count} edit attempts and they didn't work.\n" \
-      "STOP. Your understanding is wrong. Research AGAIN from scratch.\n" \
-      "\n" \
-      "Research has been RESET. You MUST redo the FULL SaneLoop process:\n" \
-      "  1. Docs - verify APIs exist (apple-docs, context7)\n" \
-      "  2. Web - current best practices (WebSearch)\n" \
-      "  3. GitHub - external examples (mcp__github__search_*)\n" \
-      "  4. Local - understand existing code (Read, Grep, Glob)\n" \
-      "\n" \
-      "All 4 categories are now MISSING. Complete them all to continue.\n" \
-      "(Note: Past learnings auto-captured by Sane-Mem at localhost:37777)\n" \
-      "\n" \
-      "This is not punishment - it's the process that ALWAYS works.\n" \
-      "Today's session proved it: full research found the 700+ iteration failure."
+      # Revoke plan approval - must show a NEW plan
+      StateManager.update(:planning) do |p|
+        p[:plan_approved] = false
+        p[:plan_shown] = false
+        p[:replan_count] = (p[:replan_count] || 0) + 1
+        p
+      end
+
+      "EDIT ATTEMPT LIMIT + REPLAN REQUIRED\n" \
+      "#{count} edit attempts failed. Your approach is wrong.\n" \
+      "Research RESET + plan approval REVOKED. You MUST:\n" \
+      "  1. Redo ALL 4 research categories (docs, web, github, local)\n" \
+      "  2. Show a NEW plan and get user approval\n" \
+      "This is the process that ALWAYS works when followed."
     end
 
     def reset_edit_attempts

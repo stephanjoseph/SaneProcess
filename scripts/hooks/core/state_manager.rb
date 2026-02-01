@@ -134,6 +134,43 @@ module StateManager
       task_keywords: [],     # Key nouns from the task
       task_hash: nil,        # Hash of normalized task for comparison
       researched_at: nil     # When research was done
+    },
+    # === SESSION DOC ENFORCEMENT ===
+    # Tracks which project docs must be read before editing
+    session_docs: {
+      required: [],       # Basenames discovered at session start
+      read: [],           # Basenames confirmed read via PostToolUse
+      enforced: true      # Active flag
+    },
+    # === VERIFICATION TRACKING (Rule #4 enforcement) ===
+    # Tracks whether tests/verification ran after edits were made.
+    # sanestop.rb blocks session end if edits > 0 and verified == false.
+    verification: {
+      tests_run: false,        # Any test command detected this session
+      verification_run: false, # Any verification command (curl, health check, etc.)
+      last_test_at: nil,       # Timestamp of last test
+      test_commands: [],       # What was run (for audit trail)
+      edits_before_test: 0     # Edits made since last test (resets on test run)
+    },
+    # === PLANNING ENFORCEMENT ===
+    # Forces plan-before-code workflow for task prompts
+    planning: {
+      required: false,        # Set true on task/big_task prompts
+      plan_shown: false,      # Claude showed a plan
+      plan_approved: false,   # User approved the plan
+      replan_count: 0,        # Times forced to re-plan (after edit limit)
+      forced_at: nil          # Timestamp when planning was required
+    },
+    # === SKILL ENFORCEMENT ===
+    # Tracks when skills should be used and validates they were executed properly
+    skill: {
+      required: nil,           # Skill name that SHOULD be invoked (e.g., :docs_audit)
+      invoked: false,          # Whether Skill tool was actually called
+      invoked_at: nil,         # Timestamp of invocation
+      subagents_spawned: 0,    # Count of Task tool calls (subagents)
+      files_read: [],          # Files read during skill execution
+      satisfied: false,        # Whether skill requirements were met
+      satisfaction_reason: nil # Why satisfied/unsatisfied
     }
   }.freeze
 

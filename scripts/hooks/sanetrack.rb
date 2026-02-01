@@ -79,6 +79,26 @@ TAUTOLOGY_PATTERNS = [
 # === TEST FILE PATTERN ===
 TEST_FILE_PATTERN = %r{(Tests?/|Specs?/|_test\.|_spec\.|Tests?\.swift|Spec\.swift)}i.freeze
 
+# === VERIFICATION DETECTION (Rule #4 enforcement) ===
+# Commands that count as "testing" or "verifying" work
+TEST_COMMAND_PATTERNS = [
+  /xcodebuild\s+test/i,
+  /swift\s+test/i,
+  /ruby\s+.*test/i,
+  /pytest|python.*-m\s+test/i,
+  /npm\s+test|yarn\s+test|bun\s+test/i,
+  /rspec|minitest/i,
+  /ruby\s+.*tier_tests/i,
+  /ruby\s+.*qa\.rb/i,
+  /ruby\s+.*validation_report/i,
+  /ruby\s+.*self[_-]test/i,
+  /--self-test/i,
+  /curl\s+.*health|curl\s+.*status|curl\s+.*readiness/i,
+  /sqlite3.*SELECT.*count|sqlite3.*SELECT.*FROM/i,
+  /wrangler\s+(deploy|publish)/i,
+  /gh\s+pr\s+checks/i
+].freeze
+
 # === TAUTOLOGY DETECTION (Rule #7) ===
 def check_tautologies(tool_name, tool_input)
   return nil unless EDIT_TOOLS.include?(tool_name)
@@ -133,6 +153,115 @@ ERROR_SIGNATURES = {
 # === INTELLIGENCE: Action Log for Pattern Learning ===
 MAX_ACTION_LOG = 20
 
+# === SKILL TRACKING ===
+# Track Skill tool invocations and Task tool calls (subagents)
+
+def track_skill_invocation(tool_name, tool_input)
+  return unless tool_name == 'Skill'
+
+  skill_name = tool_input['skill'] || tool_input[:skill]
+  return unless skill_name
+
+  StateManager.update(:skill) do |s|
+    s[:invoked] = true
+    s[:invoked_at] = Time.now.iso8601
+    s[:invoked_skill] = skill_name
+    s
+  end
+rescue StandardError => e
+  warn "⚠️  Skill tracking error: #{e.message}" if ENV['DEBUG']
+end
+
+def track_subagent_spawn(tool_name, tool_input)
+  return unless tool_name == 'Task'
+
+  # Only count if a skill is required
+  skill_state = StateManager.get(:skill)
+  return unless skill_state[:required]
+
+  StateManager.update(:skill) do |s|
+    s[:subagents_spawned] = (s[:subagents_spawned] || 0) + 1
+    s
+  end
+rescue StandardError => e
+  warn "⚠️  Subagent tracking error: #{e.message}" if ENV['DEBUG']
+end
+
+# === RESEARCH OUTPUT VALIDATION ===
+# Revoke a research category if the output was empty/meaningless
+# Prevents gaming where you search for something impossible and claim "done"
+
+EMPTY_RESEARCH_PATTERNS = [
+  /^0$/,                           # Zero results
+  /no results? found/i,
+  /0 match(es)?/i,
+  /nothing found/i,
+  /no (?:files|documents|repos|results)/i,
+  /could not find/i,
+  /did not find/i
+].freeze
+
+# Map tool names to their research category
+TOOL_TO_RESEARCH_CATEGORY = {
+  'mcp__apple-docs__' => :docs,
+  'mcp__context7__' => :docs,
+  'WebSearch' => :web,
+  'WebFetch' => :web,
+  'mcp__github__search_' => :github,
+  'mcp__github__get_' => :github,
+  'mcp__github__list_' => :github,
+  'Read' => :local,
+  'Grep' => :local,
+  'Glob' => :local
+}.freeze
+
+def invalidate_empty_research(tool_name, tool_response)
+  # Find which research category this tool belongs to
+  category = nil
+  TOOL_TO_RESEARCH_CATEGORY.each do |prefix, cat|
+    if tool_name == prefix || tool_name.start_with?(prefix)
+      category = cat
+      break
+    end
+  end
+  return unless category
+
+  # Check if the response is empty/meaningless
+  response_str = extract_response_text(tool_response)
+  return if response_str.nil? || response_str.empty?
+
+  is_empty = EMPTY_RESEARCH_PATTERNS.any? { |p| response_str.match?(p) }
+  # Also check for very short responses (likely empty results)
+  is_empty ||= response_str.strip.length < 5 && !response_str.match?(/\S{3,}/)
+
+  return unless is_empty
+
+  # Revoke this research category
+  current = StateManager.get(:research, category)
+  return unless current # Nothing to revoke
+
+  StateManager.update(:research) do |r|
+    r[category] = nil
+    r
+  end
+
+  warn "RESEARCH INVALIDATED: #{category} (empty output from #{tool_name})"
+  warn "  Re-do this research with a meaningful query."
+rescue StandardError
+  # Don't fail on validation errors
+end
+
+def extract_response_text(tool_response)
+  return '' unless tool_response.is_a?(Hash)
+
+  # Try common response fields
+  tool_response['content'] || tool_response[:content] ||
+    tool_response['output'] || tool_response[:output] ||
+    tool_response['stdout'] || tool_response[:stdout] ||
+    tool_response['result'] || tool_response[:result] ||
+    tool_response.to_s[0..500]
+end
+
 # === TRACKING FUNCTIONS ===
 
 def track_edit(tool_name, tool_input, tool_response)
@@ -148,6 +277,41 @@ def track_edit(tool_name, tool_input, tool_response)
     e[:last_file] = file_path
     e
   end
+
+  # Track edits-since-last-test for Rule #4
+  StateManager.update(:verification) do |v|
+    v[:edits_before_test] = (v[:edits_before_test] || 0) + 1
+    v
+  end
+rescue StandardError
+  # Don't fail on verification tracking
+end
+
+# === VERIFICATION TRACKING (Rule #4) ===
+# Detect test/verification commands in Bash tool calls
+def track_verification(tool_name, tool_input)
+  return unless tool_name == 'Bash'
+
+  command = tool_input['command'] || tool_input[:command] || ''
+  return if command.empty?
+
+  matched = TEST_COMMAND_PATTERNS.find { |p| command.match?(p) }
+  return unless matched
+
+  cmd_summary = command.gsub(/\s+/, ' ').strip[0..80]
+
+  StateManager.update(:verification) do |v|
+    v[:tests_run] = true
+    v[:verification_run] = true
+    v[:last_test_at] = Time.now.iso8601
+    v[:test_commands] ||= []
+    v[:test_commands] << cmd_summary unless v[:test_commands].include?(cmd_summary)
+    v[:test_commands] = v[:test_commands].last(10) # Keep last 10
+    v[:edits_before_test] = 0 # Reset — tests cover prior edits
+    v
+  end
+rescue StandardError
+  # Don't fail on verification tracking
 end
 
 # === MCP VERIFICATION TRACKING ===
@@ -193,6 +357,39 @@ def track_mcp_verification(tool_name, success)
   end
 rescue StandardError => e
   warn "⚠️  MCP tracking error: #{e.message}"
+end
+
+# === SESSION DOC READ TRACKING ===
+# When a Read tool reads a required session doc, mark it as read
+
+def track_session_doc_read(tool_name, tool_input)
+  return unless tool_name == 'Read'
+
+  file_path = tool_input['file_path'] || tool_input[:file_path]
+  return unless file_path
+
+  basename = File.basename(file_path)
+  session_docs = StateManager.get(:session_docs)
+  required = session_docs[:required] || []
+  already_read = session_docs[:read] || []
+
+  return unless required.include?(basename)
+  return if already_read.include?(basename)
+
+  StateManager.update(:session_docs) do |sd|
+    sd[:read] ||= []
+    sd[:read] << basename unless sd[:read].include?(basename)
+    sd
+  end
+
+  remaining = required - already_read - [basename]
+  if remaining.empty?
+    warn '✅ ALL SESSION DOCS READ - edits now allowed'
+  else
+    warn "📖 Read #{basename}. Remaining: #{remaining.join(', ')}"
+  end
+rescue StandardError => e
+  warn "⚠️  Session doc tracking error: #{e.message}" if ENV['DEBUG']
 end
 
 def track_failure(tool_name, tool_response)
@@ -431,6 +628,10 @@ def detect_actual_failure(tool_name, tool_response)
 end
 
 def process_result(tool_name, tool_input, tool_response)
+  # === SKILL TRACKING (before error detection) ===
+  track_skill_invocation(tool_name, tool_input)
+  track_subagent_spawn(tool_name, tool_input)
+
   # === INTELLIGENCE: Detect actual failures, not text matching ===
   error_sig = detect_actual_failure(tool_name, tool_response)
   is_error = !error_sig.nil?
@@ -458,8 +659,18 @@ def process_result(tool_name, tool_input, tool_response)
     reset_failure_count(tool_name)
     track_edit(tool_name, tool_input, tool_response)
 
+    # === RULE #4: Track test/verification commands ===
+    track_verification(tool_name, tool_input)
+
     # === MCP VERIFICATION: Track successes for MCP tools ===
     track_mcp_verification(tool_name, true)
+
+    # === SESSION DOC TRACKING ===
+    track_session_doc_read(tool_name, tool_input)
+
+    # === RESEARCH OUTPUT VALIDATION ===
+    # Revoke research category if output was empty/meaningless
+    invalidate_empty_research(tool_name, tool_response)
 
     # === RULE #7: Tautology detection for test files ===
     tautology_warning = check_tautologies(tool_name, tool_input)
@@ -750,6 +961,55 @@ def self_test
   else
     failed += 1
     warn "  FAIL: Real assertion should be allowed, got #{result.inspect}"
+  end
+
+  # === RESEARCH OUTPUT VALIDATION TESTS ===
+  warn ''
+  warn 'Testing research output validation:'
+
+  # Test: Empty research output gets invalidated
+  StateManager.update(:research) do |r|
+    r[:web] = { completed_at: Time.now.iso8601, tool: 'WebSearch', via_task: false }
+    r
+  end
+  invalidate_empty_research('WebSearch', { 'content' => 'no results found' })
+  research_after = StateManager.get(:research)
+  if research_after[:web].nil?
+    passed += 1
+    warn '  PASS: Empty research output invalidated (web)'
+  else
+    failed += 1
+    warn "  FAIL: Empty research should be invalidated, got #{research_after[:web].inspect}"
+  end
+
+  # Test: Meaningful research output is kept
+  StateManager.update(:research) do |r|
+    r[:local] = { completed_at: Time.now.iso8601, tool: 'Read', via_task: false }
+    r
+  end
+  invalidate_empty_research('Read', { 'content' => 'class StateManager\n  def get(section)\n    ...' })
+  research_after = StateManager.get(:research)
+  if research_after[:local]
+    passed += 1
+    warn '  PASS: Meaningful research output kept (local)'
+  else
+    failed += 1
+    warn '  FAIL: Meaningful research should be kept'
+  end
+
+  # Test: Zero-result count gets invalidated
+  StateManager.update(:research) do |r|
+    r[:github] = { completed_at: Time.now.iso8601, tool: 'mcp__github__search_repositories', via_task: false }
+    r
+  end
+  invalidate_empty_research('mcp__github__search_repositories', { 'content' => '0 matches' })
+  research_after = StateManager.get(:research)
+  if research_after[:github].nil?
+    passed += 1
+    warn '  PASS: Zero-result research invalidated (github)'
+  else
+    failed += 1
+    warn "  FAIL: Zero-result research should be invalidated"
   end
 
   # === CLEANUP: Reset circuit breaker only (don't reset research - breaks normal ops) ===

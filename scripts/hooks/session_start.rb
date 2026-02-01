@@ -97,6 +97,13 @@ def clear_stale_satisfaction
    EDIT_STATE_FILE, SUMMARY_VALIDATED_FILE].each do |file|
     File.delete(file) if File.exist?(file)
   end
+
+  # Reset verification and planning tracking for fresh session
+  require_relative 'core/state_manager'
+  StateManager.reset(:verification)
+  StateManager.reset(:planning)
+rescue StandardError
+  # Don't fail on state errors
 end
 
 # Detect and handle SaneLoop from previous session
@@ -204,6 +211,32 @@ def reset_mcp_verification
   end
 rescue StandardError => e
   warn "⚠️  Could not reset MCP verification: #{e.message}"
+end
+
+# === SESSION DOC ENFORCEMENT ===
+# Scan for docs that must be read before edits are allowed
+SESSION_DOC_CANDIDATES = %w[SESSION_HANDOFF.md DEVELOPMENT.md CONTRIBUTING.md].freeze
+
+def populate_session_docs
+  require_relative 'core/state_manager'
+
+  found = SESSION_DOC_CANDIDATES.select { |f| File.exist?(File.join(PROJECT_DIR, f)) }
+
+  StateManager.update(:session_docs) do |sd|
+    sd[:required] = found
+    sd[:read] = []
+    sd[:enforced] = true
+    sd
+  end
+
+  if found.any?
+    warn ''
+    warn "📖 SESSION DOCS: Read before editing:"
+    found.each { |f| warn "   → #{f}" }
+    warn ''
+  end
+rescue StandardError => e
+  warn "⚠️  Could not populate session docs: #{e.message}"
 end
 
 def show_mcp_verification_status
@@ -464,6 +497,98 @@ rescue StandardError => e
   log_debug("Subagent cleanup error: #{e.class}: #{e.message}")
 end
 
+# === MEMORY HEALTH CHECK ===
+# Catches silent memory failures: Gemini 429s, queue backlog, worker down
+# Added after Jan 28-Feb 1 2026 incident where observations stopped silently
+CLAUDE_MEM_PORT = 37777
+CLAUDE_MEM_DB = File.expand_path('~/.claude-mem/claude-mem.db')
+CLAUDE_MEM_LOGS_DIR = File.expand_path('~/.claude-mem/logs')
+
+def check_memory_health
+  issues = []
+
+  # 1. Worker responding?
+  begin
+    require 'net/http'
+    uri = URI("http://127.0.0.1:#{CLAUDE_MEM_PORT}/api/health")
+    response = Net::HTTP.get_response(uri)
+    unless response.code == '200'
+      issues << "Worker not healthy (HTTP #{response.code})"
+    end
+  rescue StandardError => e
+    issues << "Worker unreachable on port #{CLAUDE_MEM_PORT}: #{e.message}"
+  end
+
+  # 2. Recent observations being saved? (any in last 48h)
+  if File.exist?(CLAUDE_MEM_DB)
+    begin
+      count = `sqlite3 "#{CLAUDE_MEM_DB}" "SELECT count(*) FROM observations WHERE created_at >= datetime('now', '-48 hours');" 2>/dev/null`.strip.to_i
+      if count.zero?
+        issues << "No observations saved in last 48h (memory capture broken)"
+      end
+    rescue StandardError => e
+      issues << "Cannot query observations DB: #{e.message}"
+    end
+  else
+    issues << "Observations database not found at #{CLAUDE_MEM_DB}"
+  end
+
+  # 3. Gemini 429 errors in recent logs? (crash-loop indicator)
+  today = Time.now.strftime('%Y-%m-%d')
+  yesterday = (Time.now - 86400).strftime('%Y-%m-%d')
+  [today, yesterday].each do |day|
+    log_file = File.join(CLAUDE_MEM_LOGS_DIR, "claude-mem-#{day}.log")
+    next unless File.exist?(log_file)
+
+    # Check last 500 lines for 429 errors (don't read whole 44MB file)
+    recent_lines = `tail -500 "#{log_file}" 2>/dev/null`
+    error_count = recent_lines.scan(/429|RESOURCE_EXHAUSTED/).length
+    if error_count > 10
+      issues << "Gemini rate-limited: #{error_count} 429 errors in recent #{day} log (queue likely backed up)"
+    end
+
+    # Check for crash-recovery loops
+    crash_count = recent_lines.scan(/crash-recovery/).length
+    if crash_count > 5
+      issues << "Worker crash-looping: #{crash_count} crash-recovery attempts in #{day} log"
+    end
+  end
+
+  # 4. Check for invalid model config
+  settings_file = File.expand_path('~/.claude-mem/settings.json')
+  if File.exist?(settings_file)
+    begin
+      settings = JSON.parse(File.read(settings_file))
+      model = settings['CLAUDE_MEM_GEMINI_MODEL'] || ''
+      if model.include?('preview')
+        issues << "Gemini model '#{model}' may be invalid (preview models expire)"
+      end
+      if settings['CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED'] == 'false'
+        issues << "Rate limiting disabled — will hammer API on 429s"
+      end
+    rescue StandardError
+      # Non-critical
+    end
+  end
+
+  # Report
+  if issues.any?
+    warn ''
+    warn '🧠 MEMORY HEALTH: ISSUES DETECTED'
+    issues.each { |i| warn "   🔴 #{i}" }
+    warn ''
+    warn '   Memory capture may be broken. Fix before doing significant work.'
+    warn ''
+  else
+    log_debug "Memory health: OK"
+  end
+
+  issues
+rescue StandardError => e
+  log_debug "Memory health check error: #{e.message}"
+  []
+end
+
 # Build context for Claude (injected via stdout JSON)
 def build_session_context
   require_relative 'core/state_manager'
@@ -516,12 +641,16 @@ begin
   log_debug "handle_stale_saneloop done"
   reset_mcp_verification      # Reset MCP verification for new session
   log_debug "reset_mcp_verification done"
+  populate_session_docs       # Discover required docs for enforcement
+  log_debug "populate_session_docs done"
   output_session_context      # User-facing messages to stderr
   log_debug "output_session_context done"
   check_pending_mcp_actions   # Alert user to pending actions
   log_debug "check_pending_mcp_actions done"
   show_mcp_verification_status # Show MCP status and prompt
   log_debug "show_mcp_verification_status done"
+  check_memory_health           # Catch silent memory failures early
+  log_debug "check_memory_health done"
 
   # Output JSON to stdout for Claude Code to inject into context
   # Must use hookSpecificOutput format for SessionStart hooks

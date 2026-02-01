@@ -20,6 +20,7 @@
 require 'json'
 require 'fileutils'
 require 'time'
+require 'stringio'
 require_relative 'core/state_manager'
 
 LOG_FILE = File.expand_path('../../.claude/sanestop.log', __dir__)
@@ -69,6 +70,99 @@ def calculate_sop_score(violations)
   when 5..6 then 6
   else 5
   end
+end
+
+# === SOP SCORE VARIANCE DETECTION ===
+# Suspicious consistency: if scores are always 8+ with low variance,
+# the self-rating is probably inflated
+
+def check_score_variance(sop_score)
+  patterns = StateManager.get(:patterns)
+  scores = patterns[:session_scores] || []
+  scores = scores + [sop_score] # Include current score
+
+  return nil if scores.length < 5
+
+  mean = scores.sum.to_f / scores.length
+  variance = scores.map { |s| (s - mean)**2 }.sum / scores.length
+  stdev = Math.sqrt(variance)
+
+  if stdev < 0.8 && mean >= 8.0
+    # Log suspicion
+    StateManager.update(:patterns) do |p|
+      p[:weak_spots] ||= {}
+      p[:weak_spots]['score_gaming'] = (p[:weak_spots]['score_gaming'] || 0) + 1
+      p
+    end
+
+    warn ''
+    warn "SCORE VARIANCE WARNING: stdev=#{stdev.round(2)} over #{scores.length} sessions"
+    warn "  Mean: #{mean.round(1)}/10, scores: #{scores.last(5).inspect}"
+    warn "  Consistent 8+/10 is statistically unlikely."
+    warn "  Consider: did you actually follow the full process?"
+    warn ''
+  end
+rescue StandardError
+  # Don't fail on variance check
+end
+
+# === WEASEL WORD DETECTION ===
+# Detect vague language in session summaries that masks actual work
+
+WEASEL_PATTERNS = [
+  /\bused tools?\b/i,
+  /\bfollowed (?:the )?process\b/i,
+  /\bdid it right\b/i,
+  /\bvarious\b/i,
+  /\betc\.?\b/i,
+  /\bseveral\b(?!.*\d)/i,          # "several" without a number
+  /\bsome (?:changes|updates|fixes)\b/i,
+  /\bmade (?:changes|updates|improvements)\b/i,
+  /\bworked on\b/i,
+  /\bcleaned up\b(?!.*\bfile|\bfunction|\bclass)/i  # "cleaned up" without specifics
+].freeze
+
+# Opposite: specific language that shows real work
+SPECIFIC_PATTERNS = [
+  /\b\w+\.(swift|rb|py|ts|js|md)\b/,  # File names
+  /line \d+/i,                         # Line references
+  /\b(function|method|class|struct|module)\s+\w+/i,  # Named elements
+  /\b\d+\s+(test|file|line|edit|commit)/i  # Quantified work
+].freeze
+
+def check_weasel_words
+  action_log = StateManager.get(:action_log) || []
+  return if action_log.length < 3
+
+  # Check recent actions for edit content that looks like session summary
+  recent_edits = action_log.last(10).select { |a| (a[:tool] || a['tool']) == 'Edit' }
+  return if recent_edits.empty?
+
+  # Check the last few edit summaries for weasel words
+  weasels_found = []
+  recent_edits.each do |edit|
+    summary = edit[:input_summary] || edit['input_summary'] || ''
+    WEASEL_PATTERNS.each do |pattern|
+      weasels_found << pattern.source if summary.match?(pattern)
+    end
+  end
+
+  return if weasels_found.empty?
+
+  specifics = recent_edits.count do |edit|
+    summary = edit[:input_summary] || edit['input_summary'] || ''
+    SPECIFIC_PATTERNS.any? { |p| summary.match?(p) }
+  end
+
+  if specifics < recent_edits.length / 2
+    warn ''
+    warn 'WEASEL WORD WARNING: Session summary uses vague language'
+    warn "  Found: #{weasels_found.uniq.first(3).join(', ')}"
+    warn '  Prefer: specific file names, line numbers, function names'
+    warn ''
+  end
+rescue StandardError
+  # Don't fail on weasel detection
 end
 
 # === PATTERN UPDATES ===
@@ -160,6 +254,94 @@ def check_incomplete_todos(transcript_path)
   end
 end
 
+# === SKILL VALIDATION ===
+# Check if required skill was properly executed
+
+SKILL_REQUIREMENTS = {
+  'docs_audit' => { min_subagents: 3, description: 'Multi-perspective documentation audit' },
+  'evolve' => { min_subagents: 0, description: 'Technology scouting' },
+  'outreach' => { min_subagents: 0, description: 'GitHub competitor monitoring' }
+}.freeze
+
+def validate_skill_execution
+  skill_state = StateManager.get(:skill)
+  return nil unless skill_state[:required]
+
+  required_skill = skill_state[:required]
+  invoked = skill_state[:invoked]
+  subagents_spawned = skill_state[:subagents_spawned] || 0
+
+  requirements = SKILL_REQUIREMENTS[required_skill] || {}
+  min_subagents = requirements[:min_subagents] || 0
+
+  issues = []
+
+  # Check if skill was invoked at all
+  unless invoked
+    issues << "Skill '#{required_skill}' was required but NOT invoked"
+    issues << "  You should have used the Skill tool to invoke it"
+  end
+
+  # Check if enough subagents were spawned
+  if min_subagents > 0 && subagents_spawned < min_subagents
+    issues << "Skill '#{required_skill}' requires #{min_subagents}+ subagents, only #{subagents_spawned} spawned"
+    issues << "  You should have used Task tool to spawn subagents for heavy work"
+  end
+
+  return nil if issues.empty?
+
+  # Update skill state with validation result
+  StateManager.update(:skill) do |s|
+    s[:satisfied] = false
+    s[:satisfaction_reason] = issues.join('; ')
+    s
+  end
+
+  # Return warning (not blocking - just informational)
+  issues
+rescue StandardError => e
+  warn "⚠️  Skill validation error: #{e.message}" if ENV['DEBUG']
+  nil
+end
+
+# === RULE #4 ENFORCEMENT ===
+# Block session end if edits were made but no tests/verification ran.
+# This closes the gap where config changes, code changes, etc. go untested.
+
+# Files that don't require test verification (docs, config that's read-only, etc.)
+DOC_ONLY_EXTENSIONS = %w[.md .txt .mdx .rst .adoc].freeze
+
+def check_verification_required
+  edits = StateManager.get(:edits)
+  verification = StateManager.get(:verification)
+
+  edit_count = edits[:count] || 0
+  unique_files = edits[:unique_files] || []
+
+  # No edits = nothing to verify
+  return nil if edit_count.zero?
+
+  # If tests were run, we're good
+  return nil if verification[:tests_run] || verification[:verification_run]
+
+  # Check if ALL edits were doc-only (markdown, txt) — don't require tests for pure docs
+  non_doc_edits = unique_files.reject { |f| DOC_ONLY_EXTENSIONS.include?(File.extname(f).downcase) }
+  return nil if non_doc_edits.empty?
+
+  # Edits to non-doc files with no verification = BLOCK
+  "   #{edit_count} edit(s) across #{non_doc_edits.length} file(s), 0 test/verification commands.\n" \
+  "   Files changed: #{non_doc_edits.map { |f| File.basename(f) }.join(', ')}\n" \
+  "   \n" \
+  "   Acceptable verification:\n" \
+  "   • Run project tests (xcodebuild test, swift test, ruby test, etc.)\n" \
+  "   • Run validation (ruby scripts/validation_report.rb, --self-test)\n" \
+  "   • Health check (curl localhost:PORT/health)\n" \
+  "   • Any command that proves the change works"
+rescue StandardError => e
+  warn "⚠️  Verification check error: #{e.message}" if ENV['DEBUG']
+  nil  # Don't block on errors in the check itself
+end
+
 # === CHECKS ===
 
 def check_summary_needed
@@ -210,6 +392,12 @@ def save_session_learnings
   # Update patterns for future sessions
   update_session_patterns(violations, sop_score)
 
+  # Check score variance (warns if suspiciously consistent)
+  check_score_variance(sop_score)
+
+  # Check weasel words in recent edits
+  check_weasel_words
+
   # Stage high-value learnings for Memory MCP
   stage_memory_learnings(violations, sop_score)
 
@@ -230,6 +418,21 @@ def process_stop(stop_hook_active, transcript_path = nil)
   # Don't loop if already in a stop hook
   return 0 if stop_hook_active
 
+  # === SKILL VALIDATION (warn if skill was required but not properly executed) ===
+  skill_issues = validate_skill_execution
+  if skill_issues&.any?
+    warn ''
+    warn '=' * 50
+    warn 'SKILL EXECUTION WARNING'
+    warn ''
+    skill_issues.each { |issue| warn "  #{issue}" }
+    warn ''
+    warn 'This is logged but NOT blocking.'
+    warn 'Consider re-running with proper skill invocation.'
+    warn '=' * 50
+    warn ''
+  end
+
   # Check for incomplete todos (non-blocking warning)
   incomplete_todos = check_incomplete_todos(transcript_path)
   if incomplete_todos
@@ -244,6 +447,22 @@ def process_stop(stop_hook_active, transcript_path = nil)
     warn ''
     warn '  Consider completing these tasks or marking done.'
     warn '---'
+  end
+
+  # === RULE #4 ENFORCEMENT: Edits require verification ===
+  verification_block = check_verification_required
+  if verification_block
+    warn ''
+    warn '=' * 50
+    warn '🔴 RULE #4 BLOCK: EDITS WITHOUT VERIFICATION'
+    warn ''
+    warn verification_block
+    warn ''
+    warn '   You made changes but never ran tests or verified.'
+    warn '   Run tests, a health check, or verification before finishing.'
+    warn '=' * 50
+    warn ''
+    return 2  # BLOCK — Claude must address this
   end
 
   # Check if summary needed (non-blocking reminder)
@@ -326,11 +545,33 @@ def self_test
     warn '  FAIL: Should allow stop with no edits'
   end
 
-  # Test 2: With edits = reminder shown but still allow
+  # Test 2: With edits + NO verification = BLOCK (Rule #4)
   StateManager.update(:edits) do |e|
     e[:count] = 5
     e[:unique_files] = ['/a.swift', '/b.swift', '/c.swift']
     e
+  end
+  StateManager.reset(:verification)
+
+  original_stderr = $stderr.clone
+  $stderr.reopen('/dev/null', 'w')
+  exit_code = process_stop(false)
+  $stderr.reopen(original_stderr)
+
+  if exit_code == 2
+    passed += 1
+    warn '  PASS: Edits without verification -> BLOCK (exit 2)'
+  else
+    failed += 1
+    warn "  FAIL: Should block unverified edits, got exit #{exit_code}"
+  end
+
+  # Test 2b: With edits + verification = allow stop
+  StateManager.update(:verification) do |v|
+    v[:tests_run] = true
+    v[:last_test_at] = Time.now.iso8601
+    v[:test_commands] = ['xcodebuild test']
+    v
   end
 
   original_stderr = $stderr.clone
@@ -340,10 +581,31 @@ def self_test
 
   if exit_code == 0
     passed += 1
-    warn '  PASS: With edits -> allow stop (reminder shown)'
+    warn '  PASS: Edits with verification -> allow stop'
   else
     failed += 1
-    warn '  FAIL: Should allow stop even with edits'
+    warn "  FAIL: Verified edits should allow stop, got exit #{exit_code}"
+  end
+
+  # Test 2c: Doc-only edits = allow stop without verification
+  StateManager.update(:edits) do |e|
+    e[:count] = 2
+    e[:unique_files] = ['/docs/README.md', '/CHANGELOG.md']
+    e
+  end
+  StateManager.reset(:verification)
+
+  original_stderr = $stderr.clone
+  $stderr.reopen('/dev/null', 'w')
+  exit_code = process_stop(false)
+  $stderr.reopen(original_stderr)
+
+  if exit_code == 0
+    passed += 1
+    warn '  PASS: Doc-only edits -> allow stop without verification'
+  else
+    failed += 1
+    warn "  FAIL: Doc-only edits should allow stop, got exit #{exit_code}"
   end
 
   # Test 3: stop_hook_active = skip processing
@@ -356,11 +618,11 @@ def self_test
     warn '  FAIL: Should skip when stop_hook_active'
   end
 
-  # Test 4: Session logging works
+  # Test 4: Session logging works (last successful stop logged doc-only edits)
   if File.exist?(LOG_FILE)
     last_line = File.readlines(LOG_FILE).last
     entry = JSON.parse(last_line)
-    if entry['edits'] == 5
+    if entry['edits'].is_a?(Integer)
       passed += 1
       warn '  PASS: Session logging'
     else
@@ -372,13 +634,84 @@ def self_test
     warn '  FAIL: Log file not created'
   end
 
+  # === SCORE VARIANCE DETECTION TESTS ===
+  warn ''
+  warn 'Testing score variance detection:'
+
+  # Test: Low variance + high mean fires warning
+  StateManager.update(:patterns) do |p|
+    p[:session_scores] = [9, 9, 9, 9, 9, 9]  # stdev = 0, mean = 9
+    p
+  end
+  original_stderr = $stderr.clone
+  captured_stderr = StringIO.new
+  $stderr = captured_stderr
+  check_score_variance(9)
+  $stderr = original_stderr
+  if captured_stderr.string.include?('SCORE VARIANCE WARNING')
+    passed += 1
+    warn '  PASS: Score variance fires on suspicious consistency'
+  else
+    failed += 1
+    warn '  FAIL: Score variance should warn on all-9s'
+  end
+
+  # Test: Normal variance passes silently
+  StateManager.update(:patterns) do |p|
+    p[:session_scores] = [6, 8, 7, 9, 5, 8]  # Normal variance
+    p
+  end
+  captured_stderr = StringIO.new
+  $stderr = captured_stderr
+  check_score_variance(7)
+  $stderr = original_stderr
+  if !captured_stderr.string.include?('SCORE VARIANCE WARNING')
+    passed += 1
+    warn '  PASS: Normal variance passes silently'
+  else
+    failed += 1
+    warn '  FAIL: Normal variance should not warn'
+  end
+
+  # === WEASEL WORD DETECTION TESTS ===
+  warn ''
+  warn 'Testing weasel word detection:'
+
+  # Test: Vague action log triggers warning
+  StateManager.update(:action_log) do |_|
+    [
+      { tool: 'Edit', input_summary: 'used tools to fix various issues', success: true },
+      { tool: 'Edit', input_summary: 'made changes and followed process', success: true },
+      { tool: 'Edit', input_summary: 'cleaned up some code etc', success: true }
+    ]
+  end
+  captured_stderr = StringIO.new
+  $stderr = captured_stderr
+  check_weasel_words
+  $stderr = original_stderr
+  if captured_stderr.string.include?('WEASEL WORD WARNING')
+    passed += 1
+    warn '  PASS: Weasel word detection fires on vague language'
+  else
+    failed += 1
+    warn '  FAIL: Weasel words should be detected'
+  end
+
+  # Cleanup
+  StateManager.update(:action_log) { |_| [] }
+  StateManager.update(:patterns) { |p| p[:session_scores] = []; p }
+
   # === JSON INTEGRATION TESTS ===
   warn ''
   warn 'Testing JSON parsing (integration):'
 
   require 'open3'
 
-  # Test valid JSON
+  # Reset state for integration tests (clean slate)
+  StateManager.reset(:edits)
+  StateManager.reset(:verification)
+
+  # Test valid JSON (no edits = exit 0)
   json_input = '{"stop_hook_active":false}'
   stdout, stderr, status = Open3.capture3("ruby #{__FILE__}", stdin_data: json_input)
   if status.exitstatus == 0

@@ -117,6 +117,35 @@ module SanePromptTest
       warn "  FAIL: Invalid JSON should exit 0, not crash"
     end
 
+    # Test pa+ approves plan
+    StateManager.update(:planning) { |p| p[:required] = true; p[:plan_approved] = false; p }
+    $stderr.reopen('/dev/null', 'w')
+    result = handle_safemode_proc.call('pa+')
+    $stderr.reopen(original_stderr)
+    planning_after = StateManager.get(:planning)
+    if result == true && planning_after[:plan_approved] == true
+      passed += 1
+      warn '  PASS: pa+ approves plan'
+    else
+      failed += 1
+      warn "  FAIL: pa+ - result=#{result}, approved=#{planning_after[:plan_approved]}"
+    end
+
+    # Test pa? shows status
+    $stderr.reopen('/dev/null', 'w')
+    result = handle_safemode_proc.call('pa?')
+    $stderr.reopen(original_stderr)
+    if result == true
+      passed += 1
+      warn '  PASS: pa? shows planning status'
+    else
+      failed += 1
+      warn '  FAIL: pa? should return true'
+    end
+
+    # Cleanup
+    StateManager.reset(:planning)
+
     warn ''
     warn 'Testing prompt classification:'
 
@@ -352,7 +381,7 @@ module SanePromptTest
     end
 
     warn ''
-    warn "#{passed}/#{tests.length + 7} tests passed"  # +7 for command tests
+    warn "#{passed}/#{tests.length + 9} tests passed"  # +9 for command tests (7 original + 2 planning)
 
     if failed == 0
       warn ''

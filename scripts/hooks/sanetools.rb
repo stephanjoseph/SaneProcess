@@ -284,6 +284,7 @@ def detect_rule_from_reason(reason)
   when /MUTATION.*BLOCKED/i then 'mutation_blocked'
   when /REQUIREMENTS NOT MET/i then 'requirements'
   when /SANELOOP REQUIRED/i then 'saneloop_required'
+  when /READ REQUIRED DOCS/i then 'session_docs'
   else 'unknown'
   end
 end
@@ -340,6 +341,20 @@ def process_tool(tool_name, tool_input)
 
   # PREFLIGHT: Check pending MCP actions (memory staging, etc.)
   if (reason = SaneToolsChecks.check_pending_mcp_actions(tool_name, EDIT_TOOLS))
+    log_action(tool_name, true, reason)
+    output_block(reason, tool_name)
+    return 2
+  end
+
+  # Check session docs read before editing
+  if (reason = SaneToolsChecks.check_session_docs_read(tool_name, EDIT_TOOLS))
+    log_action(tool_name, true, reason)
+    output_block(reason, tool_name)
+    return 2
+  end
+
+  # Check planning required (must show plan before editing)
+  if (reason = SaneToolsChecks.check_planning_required(tool_name, EDIT_TOOLS))
     log_action(tool_name, true, reason)
     output_block(reason, tool_name)
     return 2

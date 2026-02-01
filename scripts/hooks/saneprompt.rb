@@ -154,6 +154,29 @@ def handle_safemode_command(prompt)
     warn '  This is NOT a bypass - you must actually do the research.'
     warn ''
     true
+  elsif cmd == 'pa+' || cmd == 'plan approved'
+    # Manually approve plan (unlock edits)
+    StateManager.update(:planning) do |p|
+      p[:plan_approved] = true
+      p
+    end
+    log_reset('planning', 'User manually approved plan (pa+)')
+    warn ''
+    warn 'PLAN APPROVED - edits now allowed'
+    warn ''
+    true
+  elsif cmd == 'pa?' || cmd == 'plan status'
+    # Show planning state
+    planning = StateManager.get(:planning)
+    warn ''
+    warn 'PLANNING STATUS'
+    warn "  Required: #{planning[:required]}"
+    warn "  Plan shown: #{planning[:plan_shown]}"
+    warn "  Plan approved: #{planning[:plan_approved]}"
+    warn "  Re-plan count: #{planning[:replan_count]}"
+    warn "  Forced at: #{planning[:forced_at] || 'n/a'}"
+    warn ''
+    true
   elsif cmd == 'reset?' || cmd == 'resets?'
     # Show all available reset commands
     warn ''
@@ -162,6 +185,8 @@ def handle_safemode_command(prompt)
     warn '  rb-  / reset breaker   → Clear circuit breaker (after 3+ failures)'
     warn '  reset blocks / unblock → Clear block counters (after repeated blocks)'
     warn '  rr- / reset research   → Clear research (forces redo all 4 categories)'
+    warn '  pa+ / plan approved    → Approve plan (unlock edits)'
+    warn '  pa? / plan status      → Show planning state'
     warn ''
     warn 'Resets are LOGGED and do NOT disable hooks.'
     warn 'They allow retry - the hooks still enforce rules.'
@@ -258,6 +283,42 @@ REQUIREMENT_TRIGGERS = {
   research: [/\bresearch\s*(first|this)\b/i, /\binvestigate\b/i, /\blook into\b/i]
 }.freeze
 
+# === SKILL TRIGGERS ===
+# When user says these, a skill SHOULD be invoked (not manual work)
+# These skills require subagents for proper execution
+SKILL_TRIGGERS = {
+  docs_audit: {
+    patterns: [
+      /\b(docs[- ]?audit|\/docs-audit)\b/i,
+      /\baudit\b.*\b(docs|documentation)\b/i,
+      /\bdocumentation\s+audit\b/i,
+      /\b14[- ]?perspective\b/i,
+      /\bfull\s+audit\b/i
+    ],
+    requires_subagents: true,
+    min_subagents: 3,  # Should spawn at least 3 Task subagents
+    description: 'Multi-perspective documentation audit'
+  },
+  evolve: {
+    patterns: [
+      /\b(evolve|\/evolve)\b/i,
+      /\bupdate\s+(tools|dependencies|mcps?)\b/i,
+      /\bcheck\s+for\s+updates\b/i
+    ],
+    requires_subagents: false,
+    description: 'Technology scouting and tool updates'
+  },
+  outreach: {
+    patterns: [
+      /\b(outreach|\/outreach)\b/i,
+      /\bcompetitor\s+(monitoring|analysis)\b/i,
+      /\bgithub\s+opportunities\b/i
+    ],
+    requires_subagents: false,
+    description: 'GitHub competitor monitoring'
+  }
+}.freeze
+
 # Research-only mode: user wants research WITHOUT any edits
 # When detected, ALL mutations blocked for the session (even after research complete)
 RESEARCH_ONLY_PATTERN = Regexp.union(
@@ -299,6 +360,48 @@ RULES_BY_TASK = {
   file_create: ['#1 Stay in Lane', '#9 Gen Pile'],
   general: ['#0 Name Rule First', '#5 Their House Their Rules'],
 }.freeze
+
+# === PLANNING STATE MANAGEMENT ===
+
+PLAN_APPROVAL_PATTERN = Regexp.union(
+  /^(approved|go ahead|lgtm|proceed|ship it|do it|yes|ok)$/i,
+  /\b(looks good|sounds good|that works|go for it|plan approved)\b/i
+).freeze
+
+PLAN_SHOWN_PATTERN = Regexp.union(
+  /\b(here's my plan|my approach|my plan is|steps?:)\b/i,
+  /\b(I'll|I will|approach:)\b/i
+).freeze
+
+def check_plan_approval(prompt)
+  planning = StateManager.get(:planning)
+  return unless planning[:required]
+
+  # Detect plan approval from user
+  if prompt.match?(PLAN_APPROVAL_PATTERN)
+    StateManager.update(:planning) do |p|
+      p[:plan_approved] = true
+      p
+    end
+    warn ''
+    warn 'PLAN APPROVED - edits now allowed'
+    warn ''
+  end
+end
+
+def set_planning_required(prompt_type)
+  return unless [:task, :big_task].include?(prompt_type)
+
+  # Don't re-require if already approved this session
+  planning = StateManager.get(:planning)
+  return if planning[:plan_approved]
+
+  StateManager.update(:planning) do |p|
+    p[:required] = true
+    p[:forced_at] = Time.now.iso8601 unless p[:forced_at]
+    p
+  end
+end
 
 # === CLASSIFICATION ===
 
@@ -434,6 +537,56 @@ def detect_triggers(prompt)
   triggers
 end
 
+
+# === SKILL DETECTION ===
+# Detect when a skill should be invoked and set state
+
+def detect_skill_trigger(prompt)
+  SKILL_TRIGGERS.each do |skill_name, config|
+    if config[:patterns].any? { |p| prompt.match?(p) }
+      return {
+        name: skill_name,
+        requires_subagents: config[:requires_subagents],
+        min_subagents: config[:min_subagents] || 0,
+        description: config[:description]
+      }
+    end
+  end
+  nil
+end
+
+def set_skill_requirement(skill_info)
+  return unless skill_info
+
+  StateManager.update(:skill) do |s|
+    s[:required] = skill_info[:name].to_s
+    s[:invoked] = false
+    s[:invoked_at] = nil
+    s[:subagents_spawned] = 0
+    s[:files_read] = []
+    s[:satisfied] = false
+    s[:satisfaction_reason] = nil
+    s
+  end
+
+  # Output skill requirement to Claude context
+  warn ''
+  warn '=' * 50
+  warn "SKILL REQUIRED: #{skill_info[:name]}"
+  warn "  #{skill_info[:description]}"
+  if skill_info[:requires_subagents]
+    warn ''
+    warn '  This skill REQUIRES spawning Task subagents.'
+    warn "  Minimum subagents: #{skill_info[:min_subagents]}"
+    warn '  DO NOT do the work manually.'
+  end
+  warn ''
+  warn '  Use the Skill tool to invoke this skill properly.'
+  warn '=' * 50
+  warn ''
+rescue StandardError => e
+  debug_log("set_skill_requirement error: #{e.message}")
+end
 
 # === INTELLIGENCE: Requirement Extraction ===
 
@@ -654,6 +807,12 @@ def process_prompt(prompt)
   triggers = detect_triggers(prompt)
   task_types = detect_task_types(prompt)
 
+  # === PLANNING: Check for approval in follow-up prompts ===
+  check_plan_approval(prompt)
+
+  # === PLANNING: Require plan for task prompts ===
+  set_planning_required(prompt_type)
+
   # === TASK CONTEXT CHECK (fixes task-scope bug) ===
   # If task changed significantly, reset research - research for Task A
   # should NOT unlock edits for Task B
@@ -687,7 +846,11 @@ def process_prompt(prompt)
   # 5. Detect research-only mode
   is_research_only = detect_research_only_mode(prompt)
 
-  # 6. Get learned patterns from previous sessions
+  # 6. Detect skill triggers (docs-audit, evolve, outreach)
+  skill_trigger = detect_skill_trigger(prompt)
+  set_skill_requirement(skill_trigger) if skill_trigger
+
+  # 7. Get learned patterns from previous sessions
   learned_patterns = get_learned_patterns
 
   # 7. Memory staging removed (Jan 2026) - memory MCP no longer exists
