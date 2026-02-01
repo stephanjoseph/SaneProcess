@@ -34,13 +34,26 @@
       "mcp__macos-automator__*"
     ]
   },
+  "enabledPlugins": {
+    "swift-lsp@claude-plugins-official": true,
+    "code-review@claude-plugins-official": true,
+    "security-guidance@claude-plugins-official": true,
+    "ralph-wiggum@claude-plugins-official": true,
+    "claude-mem@thedotmack": true,
+    "frontend-design@claude-plugins-official": true,
+    "context7@claude-plugins-official": true,
+    "feature-dev@claude-plugins-official": true,
+    "serena@claude-plugins-official": true,
+    "hookify@claude-plugins-official": true,
+    "sane-skills@local": true
+  },
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "[ -n \"$CLAUDE_CODE\" ] && [ -f ./scripts/hooks/session_start.rb ] && ruby ./scripts/hooks/session_start.rb || true",
+            "command": "[ -n \"$CLAUDE_CODE\" ] && [ -f .saneprocess ] && ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/session_start.rb || true",
             "timeout": 5
           }
         ]
@@ -51,7 +64,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -n \"$CLAUDE_CODE\" ] && [ -f ./scripts/hooks/saneprompt.rb ] && ruby ./scripts/hooks/saneprompt.rb || true",
+            "command": "[ -n \"$CLAUDE_CODE\" ] && [ -f .saneprocess ] && ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/saneprompt.rb || true",
             "timeout": 5
           }
         ]
@@ -62,7 +75,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -n \"$CLAUDE_CODE\" ] && [ -f ./scripts/hooks/sanetools.rb ] && ruby ./scripts/hooks/sanetools.rb || true",
+            "command": "[ -n \"$CLAUDE_CODE\" ] && [ -f .saneprocess ] && ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sanetools.rb || true",
             "timeout": 5
           }
         ]
@@ -73,7 +86,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -n \"$CLAUDE_CODE\" ] && [ -f ./scripts/hooks/sanetrack.rb ] && ruby ./scripts/hooks/sanetrack.rb || true",
+            "command": "[ -n \"$CLAUDE_CODE\" ] && [ -f .saneprocess ] && ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sanetrack.rb || true",
             "timeout": 5
           }
         ]
@@ -94,24 +107,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -n \"$CLAUDE_CODE\" ] && [ -f ./scripts/hooks/sanestop.rb ] && ruby ./scripts/hooks/sanestop.rb || true",
+            "command": "[ -n \"$CLAUDE_CODE\" ] && [ -f .saneprocess ] && ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sanestop.rb || true",
             "timeout": 5
           }
         ]
       }
     ]
-  },
-  "enabledPlugins": {
-    "swift-lsp@claude-plugins-official": true,
-    "code-review@claude-plugins-official": true,
-    "security-guidance@claude-plugins-official": true,
-    "ralph-wiggum@claude-plugins-official": true,
-    "claude-mem@thedotmack": true,
-    "frontend-design@claude-plugins-official": true,
-    "context7@claude-plugins-official": true,
-    "feature-dev@claude-plugins-official": true,
-    "serena@claude-plugins-official": true,
-    "hookify@claude-plugins-official": true,
-    "sane-skills@local": true
   }
 }

@@ -604,14 +604,24 @@ end
 # Build context for Claude (injected via stdout JSON)
 def build_session_context
   require_relative 'core/state_manager'
+  require_relative 'session_briefing'
 
   context_parts = []
   project_name = File.basename(PROJECT_DIR)
-  sop_file = find_sop_file
 
-  context_parts << "# [SaneProcess] Session Started"
-  context_parts << "Project: #{project_name}"
-  context_parts << "SOP: #{sop_file}" if sop_file
+  # Manifest-based briefing (deterministic, compact)
+  briefing = build_manifest_briefing(PROJECT_DIR)
+  if briefing
+    context_parts << "# [SaneProcess] Session Started"
+    context_parts << briefing
+  else
+    # Fallback for projects without .saneprocess
+    context_parts << "# [SaneProcess] Session Started"
+    context_parts << "Project: #{project_name}"
+    sop_file = find_sop_file
+    context_parts << "SOP: #{sop_file}" if sop_file
+    context_parts << "⚠️  No .saneprocess manifest — run SaneMaster.rb bootstrap"
+  end
 
   # Pattern rules count
   rules_dir = File.join(CLAUDE_DIR, 'rules')
@@ -620,13 +630,22 @@ def build_session_context
     context_parts << "Pattern rules: #{rule_count} loaded" if rule_count.positive?
   end
 
-  # MCP verification reminder (enforcement happens in PreToolUse)
+  # MCP verification reminder
   health = StateManager.get(:mcp_health) rescue {}
   unless health.dig(:verified_this_session)
     context_parts << ""
     context_parts << "MCP verification: Required before editing"
     context_parts << "Verify by calling: apple-docs search, context7 resolve, github search"
-    context_parts << "Serena: Call mcp__plugin_serena_serena__activate_project with project path"
+  end
+
+  # Manifest compliance warnings
+  manifest_path = File.join(PROJECT_DIR, '.saneprocess')
+  if File.exist?(manifest_path)
+    issues = validate_manifest(manifest_path)
+    if issues.any?
+      context_parts << ""
+      context_parts << "⚠️  Compliance issues: #{issues.join(', ')}"
+    end
   end
 
   context_parts.join("\n")

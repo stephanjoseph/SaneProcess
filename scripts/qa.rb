@@ -201,53 +201,58 @@ class SaneProcessQA
     end
   end
 
-  def check_hooks_registered
-    print "Checking hooks registered in settings.json... "
+def check_hooks_registered
+  print "Checking hooks registered in settings... "
 
-    unless File.exist?(SETTINGS_JSON)
-      @errors << "settings.json not found"
-      puts "❌ Missing"
-      return
-    end
+  global_settings = File.expand_path("~/.claude/settings.json")
+  settings_files = [SETTINGS_JSON, global_settings].uniq.select { |f| File.exist?(f) }
 
+  if settings_files.empty?
+    @errors << "No settings.json found (project or global)"
+    puts "❌ Missing"
+    return
+  end
+
+  # Extract hooks from all settings files (project + global)
+  registered_hooks = []
+  found_in = nil
+  settings_files.each do |path|
     begin
-      settings = JSON.parse(File.read(SETTINGS_JSON))
-    rescue JSON::ParserError => e
-      @errors << "settings.json is invalid JSON: #{e.message}"
-      puts "❌ Invalid JSON"
-      return
+      settings = JSON.parse(File.read(path))
+    rescue JSON::ParserError
+      next
     end
 
-    hooks_section = settings['hooks'] || {}
-
-    # Extract all hook commands from settings.json
-    registered_hooks = []
+    hooks_section = settings["hooks"] || {}
     %w[UserPromptSubmit SessionStart PreToolUse PostToolUse Stop].each do |hook_type|
       entries = hooks_section[hook_type] || []
       entries.each do |entry|
-        hook_list = entry['hooks'] || []
+        hook_list = entry["hooks"] || []
         hook_list.each do |hook|
-          command = hook['command'] || ''
-          # Extract hook filename from command like: ruby "$CLAUDE_PROJECT_DIR"/scripts/hooks/circuit_breaker.rb
+          command = hook["command"] || ""
+          # Match hook filenames from any path format:
+          #   ./scripts/hooks/X.rb, ~/SaneApps/.../hooks/X.rb, etc.
           if (match = command.match(%r{hooks/([^/\s"]+\.rb)}))
             registered_hooks << match[1]
+            found_in = path == SETTINGS_JSON ? "project" : "global"
           end
         end
       end
     end
-
-    registered_hooks.uniq!
-
-    # Check which expected hooks are NOT registered
-    not_registered = EXPECTED_HOOKS - registered_hooks
-
-    if not_registered.empty?
-      puts "✅ All #{EXPECTED_HOOKS.count} hooks registered"
-    else
-      @errors << "Hooks NOT registered in settings.json (invisible!): #{not_registered.join(', ')}"
-      puts "❌ Not registered: #{not_registered.join(', ')}"
-    end
   end
+
+  registered_hooks.uniq!
+
+  # Check which expected hooks are NOT registered
+  not_registered = EXPECTED_HOOKS - registered_hooks
+
+  if not_registered.empty?
+    puts "✅ All #{EXPECTED_HOOKS.count} hooks registered (#{found_in})"
+  else
+    @errors << "Hooks NOT registered in any settings.json: #{not_registered.join(", ")}"
+    puts "❌ Not registered: #{not_registered.join(", ")}"
+  end
+end
 
   def check_sanemaster_syntax
     print "Checking SaneMaster syntax... "

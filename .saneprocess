@@ -1,0 +1,29 @@
+# SaneProcess compliance manifest
+# This file opts the project into centralized SaneProcess enforcement.
+# Hooks read this for project-specific context. Compliance checker validates against it.
+
+name: SaneProcess
+type: infra
+
+# Build & test commands (emitted in session briefing)
+commands:
+  verify: ruby scripts/qa.rb
+  test: ruby scripts/hooks/test/tier_tests.rb
+  health: ruby scripts/validation_report.rb
+
+# Required documentation (compliance checker validates presence)
+docs:
+  - CLAUDE.md
+  - README.md
+  - DEVELOPMENT.md
+  - ARCHITECTURE.md
+  - SESSION_HANDOFF.md
+
+# MCPs this project relies on (emitted in session briefing)
+mcps:
+  - apple-docs
+  - context7
+  - github
+
+# Website
+website: false
