@@ -42,7 +42,10 @@ ruby scripts/hooks/sanestop.rb --self-test
 | File | Purpose |
 |------|---------|
 | `sanetools_checks.rb` | Extracted validation logic |
+| `sanetools_gaming.rb` | Gaming detection (research cheating) |
 | `saneprompt_intelligence.rb` | Prompt classification |
+| `saneprompt_commands.rb` | Safemode, breaker, planning user commands |
+| `sanetrack_reminders.rb` | Feature reminders and logging |
 | `rule_tracker.rb` | Rule tracking shared module |
 | `state_signer.rb` | State file signing/verification |
 

@@ -300,10 +300,9 @@ Requires 30+ data points per metric for statistical significance. Run daily.
 
 | Tier | Count | Purpose |
 |------|-------|---------|
-| Easy | 61 | Basic functionality |
+| Easy | 61 | Basic functionality + integration |
 | Hard | 55 | Edge cases |
 | Villain | 59 | Adversarial bypass attempts |
-| Integration | 5 | End-to-end hook chains |
 
 **Self-Tests (241):**
 

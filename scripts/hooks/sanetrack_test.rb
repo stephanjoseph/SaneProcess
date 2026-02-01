@@ -237,7 +237,7 @@ module SaneTrackTest
     end
 
     # Test: MCP tool success is not a failure
-    result = detect_actual_failure_proc.call('mcp__memory__read_graph', { 'entities' => [] })
+    result = detect_actual_failure_proc.call('mcp__apple-docs__search_apple_docs', { 'results' => [] })
     if result.nil?
       passed += 1
       warn '  PASS: MCP success is not a failure'

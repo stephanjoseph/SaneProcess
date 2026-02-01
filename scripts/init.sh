@@ -156,7 +156,10 @@ HOOKS=(
     "sanestop.rb"
     "session_start.rb"
     "sanetools_checks.rb"
+    "sanetools_gaming.rb"
     "saneprompt_intelligence.rb"
+    "saneprompt_commands.rb"
+    "sanetrack_reminders.rb"
     "rule_tracker.rb"
     "state_signer.rb"
 )

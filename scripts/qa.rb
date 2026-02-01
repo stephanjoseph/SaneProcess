@@ -21,8 +21,10 @@
 require 'net/http'
 require 'uri'
 require 'json'
+require_relative 'qa_drift_checks'
 
 class SaneProcessQA
+  include QaDriftChecks
   HOOKS_DIR = File.join(__dir__, 'hooks')
   INIT_SCRIPT = File.join(__dir__, 'init.sh')
   README = File.join(__dir__, '..', 'README.md')
@@ -44,7 +46,10 @@ class SaneProcessQA
     rule_tracker.rb
     state_signer.rb
     sanetools_checks.rb
+    sanetools_gaming.rb
     saneprompt_intelligence.rb
+    saneprompt_commands.rb
+    sanetrack_reminders.rb
   ].freeze
 
   # All hook files that should exist
@@ -99,9 +104,14 @@ class SaneProcessQA
     check_hooks_readme
     check_version_consistency
     check_urls
+    check_state_schema_drift
+    check_rule_count_crossref
+    check_stale_references
+    check_file_line_counts
     run_hook_tests
     run_self_tests
     run_test_audit
+    check_test_count_claims
 
     puts
     puts "═══════════════════════════════════════════════════════════════"

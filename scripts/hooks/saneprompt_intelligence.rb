@@ -227,7 +227,7 @@ module SanePromptIntelligence
     lines << 'Observations:'
     entity['observations'].each { |obs| lines << "  - #{obs}" }
     lines << ''
-    lines << 'ACTION REQUIRED: Call mcp__memory__create_entities or mcp__memory__add_observations'
+    lines << 'ACTION REQUIRED: Save this learning via Sane-Mem (auto-captured by hooks)'
     lines << "Then delete: #{MEMORY_STAGING_FILE}"
 
     lines.join("\n")
