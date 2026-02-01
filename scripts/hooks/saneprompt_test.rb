@@ -12,7 +12,8 @@ require_relative 'core/state_manager'
 
 module SanePromptTest
   def self.run(classify_proc, rules_proc, detect_triggers_proc, detect_frustration_proc,
-               extract_requirements_proc, detect_research_only_proc, handle_safemode_proc)
+               extract_requirements_proc, detect_research_only_proc, handle_safemode_proc,
+               check_plan_approval_proc = nil)
     warn 'SanePrompt Self-Test'
     warn '=' * 40
 
@@ -141,6 +142,39 @@ module SanePromptTest
     else
       failed += 1
       warn '  FAIL: pa? should return true'
+    end
+
+    # Test: "approved" (passthrough) approves plan via check_plan_approval
+    # BUG FIX: Previously, "approved" was classified as passthrough and
+    # exited before reaching check_plan_approval. Now check_plan_approval
+    # runs before classification.
+    if check_plan_approval_proc
+      StateManager.update(:planning) { |p| p[:required] = true; p[:plan_approved] = false; p }
+      $stderr.reopen('/dev/null', 'w')
+      check_plan_approval_proc.call('approved')
+      $stderr.reopen(original_stderr)
+      planning_after = StateManager.get(:planning)
+      if planning_after[:plan_approved] == true
+        passed += 1
+        warn '  PASS: "approved" (passthrough) approves plan'
+      else
+        failed += 1
+        warn "  FAIL: \"approved\" should approve plan, got #{planning_after[:plan_approved]}"
+      end
+
+      # Test: "yes" (passthrough) approves plan
+      StateManager.update(:planning) { |p| p[:required] = true; p[:plan_approved] = false; p }
+      $stderr.reopen('/dev/null', 'w')
+      check_plan_approval_proc.call('yes')
+      $stderr.reopen(original_stderr)
+      planning_after = StateManager.get(:planning)
+      if planning_after[:plan_approved] == true
+        passed += 1
+        warn '  PASS: "yes" (passthrough) approves plan'
+      else
+        failed += 1
+        warn "  FAIL: \"yes\" should approve plan, got #{planning_after[:plan_approved]}"
+      end
     end
 
     # Cleanup
@@ -381,7 +415,7 @@ module SanePromptTest
     end
 
     warn ''
-    warn "#{passed}/#{tests.length + 9} tests passed"  # +9 for command tests (7 original + 2 planning)
+    warn "#{passed}/#{tests.length + 11} tests passed"  # +11 for command tests (7 original + 4 planning)
 
     if failed == 0
       warn ''

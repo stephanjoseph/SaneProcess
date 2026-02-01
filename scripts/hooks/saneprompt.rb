@@ -496,10 +496,11 @@ def check_task_change_and_reset(prompt, task_types)
       warn '=' * 50
       warn ''
 
-      # Reset research state
+      # Reset research state and planning (old plan doesn't apply to new task)
       StateManager.reset(:research)
       StateManager.reset(:edit_attempts)
-      log_reset('research', "Task change: #{prev_hash} -> #{new_hash}")
+      StateManager.reset(:planning)
+      log_reset('research+planning', "Task change: #{prev_hash} -> #{new_hash}")
     end
 
     # Update stored context
@@ -796,6 +797,11 @@ def process_prompt(prompt)
     return 0
   end
 
+  # === PLANNING: Check for approval BEFORE classification ===
+  # "approved", "yes", "ok" are passthroughs but must still approve plans.
+  # Without this, natural approval phrases never reach check_plan_approval.
+  check_plan_approval(prompt)
+
   prompt_type = classify_prompt(prompt)
 
   if prompt_type == :passthrough
@@ -806,9 +812,6 @@ def process_prompt(prompt)
   rules = rules_for_prompt(prompt)
   triggers = detect_triggers(prompt)
   task_types = detect_task_types(prompt)
-
-  # === PLANNING: Check for approval in follow-up prompts ===
-  check_plan_approval(prompt)
 
   # === PLANNING: Require plan for task prompts ===
   set_planning_required(prompt_type)
@@ -897,7 +900,8 @@ def self_test
     method(:detect_frustration),
     method(:extract_requirements),
     method(:detect_research_only_mode),
-    method(:handle_safemode_command)
+    method(:handle_safemode_command),
+    method(:check_plan_approval)
   )
 end
 

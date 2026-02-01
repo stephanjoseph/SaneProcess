@@ -102,6 +102,10 @@ def clear_stale_satisfaction
   require_relative 'core/state_manager'
   StateManager.reset(:verification)
   StateManager.reset(:planning)
+
+  # Clear context compact warning so new session gets fresh warning
+  context_warned = File.join(CLAUDE_DIR, 'context_warned_size.txt')
+  File.delete(context_warned) if File.exist?(context_warned)
 rescue StandardError
   # Don't fail on state errors
 end

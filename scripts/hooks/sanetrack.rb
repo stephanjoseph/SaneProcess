@@ -21,6 +21,7 @@ require 'json'
 require 'fileutils'
 require 'time'
 require_relative 'core/state_manager'
+require_relative 'core/context_compact'
 
 LOG_FILE = File.expand_path('../../.claude/sanetrack.log', __dir__)
 
@@ -488,9 +489,17 @@ end
 def summarize_input(input)
   return nil unless input.is_a?(Hash)
 
-  # Extract key info for correlation
-  input['file_path'] || input[:file_path] ||
-    input['command']&.to_s&.slice(0, 50) || input[:command]&.to_s&.slice(0, 50) ||
+  file_path = input['file_path'] || input[:file_path]
+  if file_path
+    # Include content preview for markdown files (enables weasel word detection)
+    if file_path.end_with?('.md')
+      content = input['new_string'] || input[:new_string] || input['content'] || input[:content]
+      return "#{file_path}: #{content[0..120]}" if content
+    end
+    return file_path
+  end
+
+  input['command']&.to_s&.slice(0, 50) || input[:command]&.to_s&.slice(0, 50) ||
     input['prompt']&.to_s&.slice(0, 50) || input[:prompt]&.to_s&.slice(0, 50)
 end
 
@@ -710,6 +719,9 @@ def process_result(tool_name, tool_input, tool_response)
 
     # === FEATURE REMINDER: Suggest Explore subagent for complex searches ===
     emit_explore_reminder(tool_name, tool_input)
+
+    # === CONTEXT WARNING: Check transcript size, warn before auto-compact ===
+    ContextCompact.check_and_warn
   end
 
   0  # PostToolUse always returns 0 (tool already executed)
@@ -718,316 +730,15 @@ end
 # === SELF-TEST ===
 
 def self_test
-  warn 'SaneTrack Self-Test'
-  warn '=' * 40
-
-  # Reset state
-  StateManager.reset(:edits)
-  StateManager.reset(:circuit_breaker)
-  StateManager.update(:enforcement) { |e| e[:halted] = false; e[:blocks] = []; e }
-
-  passed = 0
-  failed = 0
-
-  # Test 1: Track edit
-  process_result('Edit', { 'file_path' => '/test/file1.swift' }, { 'success' => true })
-  edits = StateManager.get(:edits)
-  if edits[:count] == 1 && edits[:unique_files].include?('/test/file1.swift')
-    passed += 1
-    warn '  PASS: Edit tracking'
-  else
-    failed += 1
-    warn '  FAIL: Edit tracking'
-  end
-
-  # Test 2: Track multiple edits to same file
-  process_result('Edit', { 'file_path' => '/test/file1.swift' }, { 'success' => true })
-  edits = StateManager.get(:edits)
-  if edits[:count] == 2 && edits[:unique_files].length == 1
-    passed += 1
-    warn '  PASS: Unique file tracking'
-  else
-    failed += 1
-    warn '  FAIL: Unique file tracking'
-  end
-
-  # Test 3: Track failure
-  process_result('Bash', {}, { 'error' => 'command not found' })
-  cb = StateManager.get(:circuit_breaker)
-  if cb[:failures] == 1
-    passed += 1
-    warn '  PASS: Failure tracking'
-  else
-    failed += 1
-    warn '  FAIL: Failure tracking'
-  end
-
-  # Test 4: Reset failure on success
-  process_result('Bash', {}, { 'output' => 'success' })
-  cb = StateManager.get(:circuit_breaker)
-  if cb[:failures] == 0
-    passed += 1
-    warn '  PASS: Failure reset on success'
-  else
-    failed += 1
-    warn '  FAIL: Failure reset on success'
-  end
-
-  # Test 5: Circuit breaker trips at 3 failures
-  StateManager.reset(:circuit_breaker)
-  process_result('Bash', {}, { 'error' => 'fail 1' })
-  process_result('Bash', {}, { 'error' => 'fail 2' })
-  process_result('Bash', {}, { 'error' => 'fail 3' })
-  cb = StateManager.get(:circuit_breaker)
-  if cb[:tripped]
-    passed += 1
-    warn '  PASS: Circuit breaker trips at 3 failures'
-  else
-    failed += 1
-    warn '  FAIL: Circuit breaker should trip at 3 failures'
-  end
-
-  # === INTELLIGENCE TESTS ===
-
-  # Test 6: Error signature normalization
-  StateManager.reset(:circuit_breaker)
-  sig1 = normalize_error('ruby: command not found')
-  sig2 = normalize_error('bash: npm: command not found')
-  if sig1 == 'COMMAND_NOT_FOUND' && sig2 == 'COMMAND_NOT_FOUND'
-    passed += 1
-    warn '  PASS: Error signature normalization (COMMAND_NOT_FOUND)'
-  else
-    failed += 1
-    warn "  FAIL: Expected COMMAND_NOT_FOUND, got #{sig1}, #{sig2}"
-  end
-
-  # Test 7: Per-signature trip (3x same with successes between)
-  StateManager.reset(:circuit_breaker)
-  process_result('Bash', {}, { 'error' => 'command not found: ruby' })
-  process_result('Bash', {}, { 'output' => 'success' })  # Success resets legacy, not signature
-  process_result('Bash', {}, { 'error' => 'command not found: npm' })
-  process_result('Bash', {}, { 'output' => 'success' })  # Success again
-  process_result('Bash', {}, { 'error' => 'command not found: python' })
-  cb = StateManager.get(:circuit_breaker)
-  if cb[:tripped] && cb[:error_signatures] && cb[:error_signatures][:COMMAND_NOT_FOUND] == 3
-    passed += 1
-    warn '  PASS: Per-signature trip at 3x same (with successes between)'
-  else
-    failed += 1
-    warn "  FAIL: Per-signature trip - tripped=#{cb[:tripped]}, signatures=#{cb[:error_signatures]}"
-  end
-
-  # Test 8: Action log for learning
-  StateManager.update(:action_log) { |_| [] }  # Initialize empty
-  process_result('Edit', { 'file_path' => '/test/file.swift' }, { 'success' => true })
-  process_result('Bash', { 'command' => 'ruby test.rb' }, { 'error' => 'syntax error' })
-  log = StateManager.get(:action_log)
-  if log.is_a?(Array) && log.length >= 2
-    first = log[-2]  # Second to last (Edit)
-    last = log[-1]   # Last (Bash with error)
-    if first && last && first[:tool] == 'Edit' && last[:error_sig] == 'SYNTAX_ERROR'
-      passed += 1
-      warn '  PASS: Action log for learning'
-    else
-      failed += 1
-      warn "  FAIL: Action log content - first=#{first}, last=#{last}"
-    end
-  else
-    failed += 1
-    warn "  FAIL: Action log - got #{log.inspect[0..100]}"
-  end
-
-  # === JSON INTEGRATION TESTS ===
-  warn ''
-  warn 'Testing JSON parsing (integration):'
-
-  require 'open3'
-
-  # Test valid JSON with success response
-  json_input = '{"tool_name":"Edit","tool_input":{"file_path":"/test/integrated.swift"},"tool_response":{"success":true}}'
-  stdout, stderr, status = Open3.capture3("ruby #{__FILE__}", stdin_data: json_input)
-  if status.exitstatus == 0
-    passed += 1
-    warn '  PASS: Valid JSON parsed correctly (exit 0)'
-  else
-    failed += 1
-    warn "  FAIL: Valid JSON should return exit 0, got #{status.exitstatus}"
-  end
-
-  # Test JSON with error response (still returns 0 - PostToolUse is tracking only)
-  json_input = '{"tool_name":"Bash","tool_input":{"command":"test"},"tool_response":{"error":"command failed"}}'
-  stdout, stderr, status = Open3.capture3("ruby #{__FILE__}", stdin_data: json_input)
-  if status.exitstatus == 0
-    passed += 1
-    warn '  PASS: Error response still returns exit 0 (PostToolUse is passive)'
-  else
-    failed += 1
-    warn "  FAIL: PostToolUse should always exit 0, got #{status.exitstatus}"
-  end
-
-  # Test invalid JSON doesn't crash
-  json_input = 'this is not valid json'
-  stdout, stderr, status = Open3.capture3("ruby #{__FILE__}", stdin_data: json_input)
-  if status.exitstatus == 0
-    passed += 1
-    warn '  PASS: Invalid JSON returns exit 0 (fail safe)'
-  else
-    failed += 1
-    warn "  FAIL: Invalid JSON should return exit 0, got #{status.exitstatus}"
-  end
-
-  # Test empty input doesn't crash
-  stdout, stderr, status = Open3.capture3("ruby #{__FILE__}", stdin_data: '')
-  if status.exitstatus == 0
-    passed += 1
-    warn '  PASS: Empty input returns exit 0 (fail safe)'
-  else
-    failed += 1
-    warn "  FAIL: Empty input should return exit 0, got #{status.exitstatus}"
-  end
-
-  # === DETECT ACTUAL FAILURE TESTS ===
-  warn ''
-  warn 'Testing failure detection (no false positives):'
-
-  # Test: Read file content with error-like text is NOT a failure
-  result = detect_actual_failure('Read', { 'content' => 'def handle_error: raise TypeError' })
-  if result.nil?
-    passed += 1
-    warn '  PASS: Read file content with error text is not a failure'
-  else
-    failed += 1
-    warn "  FAIL: Read content should not be flagged - got #{result}"
-  end
-
-  # Test: Bash with non-zero exit code IS a failure
-  result = detect_actual_failure('Bash', { 'exit_code' => 1, 'stdout' => '' })
-  if result == 'COMMAND_FAILED'
-    passed += 1
-    warn '  PASS: Bash non-zero exit code is a failure'
-  else
-    failed += 1
-    warn "  FAIL: Expected COMMAND_FAILED, got #{result.inspect}"
-  end
-
-  # Test: MCP tool success is not a failure
-  result = detect_actual_failure('mcp__memory__read_graph', { 'entities' => [] })
-  if result.nil?
-    passed += 1
-    warn '  PASS: MCP success is not a failure'
-  else
-    failed += 1
-    warn "  FAIL: MCP success should return nil, got #{result}"
-  end
-
-  # === TAUTOLOGY DETECTION TESTS (Rule #7) ===
-  warn ''
-  warn 'Testing tautology detection (Rule #7):'
-
-  # Test: Detects #expect(true) in test file
-  result = check_tautologies('Edit', {
-    'file_path' => '/path/Tests/MyTests.swift',
-    'new_string' => '@Test func bad() { #expect(true) }'
-  })
-  if result&.include?('RULE #7 WARNING')
-    passed += 1
-    warn '  PASS: Detects #expect(true) in test file'
-  else
-    failed += 1
-    warn "  FAIL: Should detect tautology, got #{result.inspect}"
-  end
-
-  # Test: Ignores tautology in non-test file
-  result = check_tautologies('Edit', {
-    'file_path' => '/path/Sources/Main.swift',
-    'new_string' => 'let x = true; #expect(true)'
-  })
-  if result.nil?
-    passed += 1
-    warn '  PASS: Ignores tautology in non-test file'
-  else
-    failed += 1
-    warn "  FAIL: Should ignore non-test file, got #{result.inspect}"
-  end
-
-  # Test: Allows real assertions
-  result = check_tautologies('Edit', {
-    'file_path' => '/path/Tests/ValidTests.swift',
-    'new_string' => '@Test func good() { #expect(result == 42) }'
-  })
-  if result.nil?
-    passed += 1
-    warn '  PASS: Allows real assertions in test file'
-  else
-    failed += 1
-    warn "  FAIL: Real assertion should be allowed, got #{result.inspect}"
-  end
-
-  # === RESEARCH OUTPUT VALIDATION TESTS ===
-  warn ''
-  warn 'Testing research output validation:'
-
-  # Test: Empty research output gets invalidated
-  StateManager.update(:research) do |r|
-    r[:web] = { completed_at: Time.now.iso8601, tool: 'WebSearch', via_task: false }
-    r
-  end
-  invalidate_empty_research('WebSearch', { 'content' => 'no results found' })
-  research_after = StateManager.get(:research)
-  if research_after[:web].nil?
-    passed += 1
-    warn '  PASS: Empty research output invalidated (web)'
-  else
-    failed += 1
-    warn "  FAIL: Empty research should be invalidated, got #{research_after[:web].inspect}"
-  end
-
-  # Test: Meaningful research output is kept
-  StateManager.update(:research) do |r|
-    r[:local] = { completed_at: Time.now.iso8601, tool: 'Read', via_task: false }
-    r
-  end
-  invalidate_empty_research('Read', { 'content' => 'class StateManager\n  def get(section)\n    ...' })
-  research_after = StateManager.get(:research)
-  if research_after[:local]
-    passed += 1
-    warn '  PASS: Meaningful research output kept (local)'
-  else
-    failed += 1
-    warn '  FAIL: Meaningful research should be kept'
-  end
-
-  # Test: Zero-result count gets invalidated
-  StateManager.update(:research) do |r|
-    r[:github] = { completed_at: Time.now.iso8601, tool: 'mcp__github__search_repositories', via_task: false }
-    r
-  end
-  invalidate_empty_research('mcp__github__search_repositories', { 'content' => '0 matches' })
-  research_after = StateManager.get(:research)
-  if research_after[:github].nil?
-    passed += 1
-    warn '  PASS: Zero-result research invalidated (github)'
-  else
-    failed += 1
-    warn "  FAIL: Zero-result research should be invalidated"
-  end
-
-  # === CLEANUP: Reset circuit breaker only (don't reset research - breaks normal ops) ===
-  StateManager.reset(:circuit_breaker)
-  StateManager.update(:enforcement) { |e| e[:halted] = false; e[:blocks] = []; e }
-
-  warn ''
-  warn "#{passed}/#{passed + failed} tests passed"
-
-  if failed == 0
-    warn ''
-    warn 'ALL TESTS PASSED'
-    exit 0
-  else
-    warn ''
-    warn "#{failed} TESTS FAILED"
-    exit 1
-  end
+  require_relative 'sanetrack_test'
+  exit SaneTrackTest.run(
+    method(:process_result),
+    method(:detect_actual_failure),
+    method(:normalize_error),
+    method(:check_tautologies),
+    method(:invalidate_empty_research),
+    __FILE__
+  )
 end
 
 def show_status
