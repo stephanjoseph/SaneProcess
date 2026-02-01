@@ -1,0 +1,162 @@
+{
+  "generated_at": "2026-02-01T12:21:40-05:00",
+  "verdict": {
+    "status": "BROKEN RELEASE PIPELINE",
+    "detail": "4 customer-facing issues - CUSTOMERS AFFECTED",
+    "color": "red"
+  },
+  "issues": [
+    "Q0 CONFIG: [apps/SaneBar] CLAUDE.md missing sister apps: SaneScript",
+    "Q0 CONFIG: [apps/SaneVideo] CLAUDE.md missing sister apps: SaneScript",
+    "Q0 CONFIG: [apps/SaneSync] CLAUDE.md missing sister apps: SaneScript",
+    "Q0 CONFIG: [apps/SaneAI] CLAUDE.md missing sister apps: SaneScript",
+    "Q0 CONFIG: [apps/SaneHosts] CLAUDE.md missing sister apps: SaneScript",
+    "Q6 RELEASE: [SaneVideo] No GitHub releases found (customers can't download updates)",
+    "Q6 RELEASE: [SaneSync] No GitHub releases found (customers can't download updates)",
+    "Q6 RELEASE: [SaneClip] No GitHub releases found (customers can't download updates)",
+    "Q6 RELEASE: [SaneAI] No GitHub releases found (customers can't download updates)",
+    "Q10 DOCS: [SaneBar] CHANGELOG missing version 1017"
+  ],
+  "warnings": [
+    "CLOUDFLARE_API_TOKEN in both .zshrc and .zprofile (redundant, keep only .zprofile)",
+    "LEMON_SQUEEZY_API_KEY in both .zshrc and .zprofile (redundant, keep only .zprofile)",
+    "Q1: Only 0 block samples. Need 30+ for significance.",
+    "Q3: Only 18 scores. Need 30+ for significance.",
+    "Q4: Only 0 sessions tracked. Need 30+.",
+    "Q6 RELEASE: [SaneBar] minimumSystemVersion 15.0 may block many users",
+    "Q6 RELEASE: [SaneBar] minimumSystemVersion 15.0 may block many users",
+    "Q6 RELEASE: [SaneBar] minimumSystemVersion 15.0 may block many users",
+    "Q6 RELEASE: [SaneBar] minimumSystemVersion 15.0 may block many users",
+    "Q6 RELEASE: [SaneBar] minimumSystemVersion 15.0 may block many users",
+    "Q6 RELEASE: [SaneBar] minimumSystemVersion 15.0 may block many users",
+    "Q6 RELEASE: [SaneBar] minimumSystemVersion 15.0 may block many users",
+    "Q6 RELEASE: [SaneBar] minimumSystemVersion 15.0 may block many users",
+    "Q6 RELEASE: [SaneBar] minimumSystemVersion 15.0 may block many users",
+    "Q6 RELEASE: [SaneBar] minimumSystemVersion 15.0 may block many users",
+    "Q6 RELEASE: [SaneBar] minimumSystemVersion 15.0 may block many users",
+    "Q6 RELEASE: [SaneBar] minimumSystemVersion 15.0 may block many users",
+    "Q6 RELEASE: [SaneVideo] No appcast.xml found (OK if not using Sparkle)",
+    "Q6 RELEASE: [SaneSync] No appcast.xml found (OK if not using Sparkle)",
+    "Q6 RELEASE: [SaneClip] minimumSystemVersion 15.0 may block many users",
+    "Q6 RELEASE: [SaneClip] minimumSystemVersion 15.0 may block many users",
+    "Q6 RELEASE: [SaneClip] minimumSystemVersion 15.0 may block many users",
+    "Q6 RELEASE: [SaneAI] No appcast.xml found (OK if not using Sparkle)",
+    "Q8 SIGNING: [SaneBar] App may not be notarized (stapler check failed)",
+    "Q8 SIGNING: [SaneVideo] App may not be notarized (stapler check failed)",
+    "Q8 SIGNING: [SaneClip] App may not be notarized (stapler check failed)",
+    "Q8 SIGNING: [SaneHosts] App may not be notarized (stapler check failed)",
+    "Q10 DOCS: [SaneBar] README may not mention latest version 1017"
+  ],
+  "metrics": {
+    "config_consistency": {
+      "issues": 5,
+      "details": [
+        "[apps/SaneBar] CLAUDE.md missing sister apps: SaneScript",
+        "[apps/SaneVideo] CLAUDE.md missing sister apps: SaneScript",
+        "[apps/SaneSync] CLAUDE.md missing sister apps: SaneScript",
+        "[apps/SaneAI] CLAUDE.md missing sister apps: SaneScript",
+        "[apps/SaneHosts] CLAUDE.md missing sister apps: SaneScript"
+      ]
+    },
+    "block_accuracy": {
+      "correct": 0,
+      "wrong": 0,
+      "total": 0,
+      "accuracy": null,
+      "sample_size": 0
+    },
+    "doom_loop_prevention": {
+      "caught": 0,
+      "missed": 0,
+      "catch_rate": null,
+      "breaker_trips": 0,
+      "repeat_error_patterns": 0
+    },
+    "score_integrity": {
+      "sample_size": 18,
+      "distribution": {
+        "8": 10,
+        "9": 1,
+        "10": 7
+      },
+      "average": 8.83,
+      "std_dev": 0.96,
+      "pct_8_or_higher": 100.0,
+      "statistically_significant": false
+    },
+    "test_outcomes": {
+      "total_sessions": 0,
+      "sessions_tests_passing": 0,
+      "pass_rate": null
+    },
+    "trend": {
+      "snapshots_analyzed": 5,
+      "first_half_avg_issues": 2.0,
+      "second_half_avg_issues": 8.7,
+      "first_half_avg_score": null,
+      "second_half_avg_score": null
+    },
+    "release_integrity": {
+      "issues": 4,
+      "warnings": 18,
+      "details": [
+        "[SaneVideo] No GitHub releases found (customers can't download updates)",
+        "[SaneSync] No GitHub releases found (customers can't download updates)",
+        "[SaneClip] No GitHub releases found (customers can't download updates)",
+        "[SaneAI] No GitHub releases found (customers can't download updates)",
+        "[SaneBar] minimumSystemVersion 15.0 may block many users",
+        "[SaneBar] minimumSystemVersion 15.0 may block many users",
+        "[SaneBar] minimumSystemVersion 15.0 may block many users",
+        "[SaneBar] minimumSystemVersion 15.0 may block many users",
+        "[SaneBar] minimumSystemVersion 15.0 may block many users",
+        "[SaneBar] minimumSystemVersion 15.0 may block many users",
+        "[SaneBar] minimumSystemVersion 15.0 may block many users",
+        "[SaneBar] minimumSystemVersion 15.0 may block many users",
+        "[SaneBar] minimumSystemVersion 15.0 may block many users",
+        "[SaneBar] minimumSystemVersion 15.0 may block many users",
+        "[SaneBar] minimumSystemVersion 15.0 may block many users",
+        "[SaneBar] minimumSystemVersion 15.0 may block many users",
+        "[SaneVideo] No appcast.xml found (OK if not using Sparkle)",
+        "[SaneSync] No appcast.xml found (OK if not using Sparkle)",
+        "[SaneClip] minimumSystemVersion 15.0 may block many users",
+        "[SaneClip] minimumSystemVersion 15.0 may block many users",
+        "[SaneClip] minimumSystemVersion 15.0 may block many users",
+        "[SaneAI] No appcast.xml found (OK if not using Sparkle)"
+      ]
+    },
+    "website_distribution": {
+      "issues": 0,
+      "warnings": 0,
+      "details": []
+    },
+    "code_signing": {
+      "issues": 0,
+      "warnings": 4,
+      "details": [
+        "[SaneBar] App may not be notarized (stapler check failed)",
+        "[SaneVideo] App may not be notarized (stapler check failed)",
+        "[SaneClip] App may not be notarized (stapler check failed)",
+        "[SaneHosts] App may not be notarized (stapler check failed)"
+      ]
+    },
+    "support_infrastructure": {
+      "issues": 0,
+      "warnings": 0,
+      "details": []
+    },
+    "documentation_currency": {
+      "issues": 1,
+      "warnings": 1,
+      "details": [
+        "[SaneBar] CHANGELOG missing version 1017",
+        "[SaneBar] README may not mention latest version 1017"
+      ]
+    },
+    "final": {
+      "critical_failures": 0,
+      "customer_facing_critical": 4,
+      "data_gaps": 28,
+      "projects_with_data": 6
+    }
+  }
+}
