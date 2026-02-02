@@ -78,6 +78,7 @@ class SaneProcessQA
     quality.rb
     session.rb
     sop_loop.rb
+    structural_compliance.rb
     test_mode.rb
     verify.rb
   ].freeze

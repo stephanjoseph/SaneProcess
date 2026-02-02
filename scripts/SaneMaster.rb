@@ -32,6 +32,7 @@ require_relative 'sanemaster/md_export'
 require_relative 'sanemaster/meta'
 require_relative 'sanemaster/session'
 require_relative 'sanemaster/circuit_breaker_state'
+require_relative 'sanemaster/structural_compliance'
 
 class SaneMaster
   include SaneMasterModules::Base
@@ -48,6 +49,7 @@ class SaneMaster
   include SaneMasterModules::MdExport
   include SaneMasterModules::Meta
   include SaneMasterModules::Session
+  include SaneMasterModules::StructuralCompliance
 
   # ═══════════════════════════════════════════════════════════════════════════
   # COMMAND REFERENCE - Organized by category for easy discovery
@@ -81,7 +83,9 @@ class SaneMaster
         'swift6' => { args: '', desc: 'Verify Swift 6 concurrency compliance' },
         'check_docs' => { args: '', desc: 'Check docs are in sync with code' },
         'check_binary' => { args: '', desc: 'Audit binary for security issues' },
-        'test_scan' => { args: '[-v]', desc: 'Scan tests for tautologies and hardcoded values' }
+        'test_scan' => { args: '[-v]', desc: 'Scan tests for tautologies and hardcoded values' },
+        'structural' => { args: '[path]', desc: 'Structural compliance check (sc)' },
+        'compliance' => { args: '[path]', desc: 'Structural + session compliance (cr)' }
       }
     },
     debug: {
@@ -247,7 +251,7 @@ class SaneMaster
       run_quality_report
     when 'audit'
       audit_project
-    when 'system_check', 'sc'
+    when 'system_check'
       audit_unified
     when 'qa'
       system(File.join(__dir__, 'qa.rb'))
@@ -333,7 +337,10 @@ class SaneMaster
       show_breaker_status
     when 'breaker_errors', 'be'
       show_breaker_errors
+    when 'structural', 'sc'
+      run_structural_compliance(args)
     when 'compliance', 'cr'
+      run_structural_compliance(args)
       require_relative 'sanemaster/compliance_report'
       SaneMasterModules::ComplianceReport.generate
 

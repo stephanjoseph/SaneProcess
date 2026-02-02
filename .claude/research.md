@@ -74,64 +74,60 @@
 
 ---
 
-## MCP Tool Inventory & Utilization Audit
-**Updated:** 2026-02-01 | **Status:** verified | **TTL:** 30d
-**Source:** ToolSearch across all 8 MCP servers
+## MCP Tool Inventory & Adoption Status
+**Updated:** 2026-02-01 | **Status:** adoption-audit-complete | **TTL:** 30d
+**Source:** Codebase audit of hooks, scripts, skills, and Serena memories
 
-### Gemini (30+ tools — mostly unused)
-- `gemini-deep-research` — Multi-step web research, offloads from Claude context
-- `gemini-brainstorm` — Cross-model ideation
-- `gemini-analyze-code` — Second opinion on code quality/security
-- `gemini-generate-image` — Marketing assets, app icons, landing page graphics
-- `gemini-generate-video` — Product demo clips
-- `gemini-analyze-image` — Screenshot analysis for customer support
-- `gemini-analyze-url` / `gemini-compare-urls` — Competitor website analysis
-- `gemini-youtube-summary` — Summarize WWDC/tech videos
-- `gemini-speak` / `gemini-dialogue` — Voiceover for demos
-- `gemini-count-tokens` — Estimate costs before expensive operations
-- `gemini-run-code` — Sandboxed code execution
-- `gemini-search` — Web search from Gemini's perspective
-- `gemini-structured` / `gemini-extract` — Structured data extraction
-- `gemini-summarize-pdf` / `gemini-extract-tables` — Document processing
+### Status Key
+- ✅ ACTIVE — Used in production workflows
+- 📝 DOCUMENTED — In skills/docs but not automated
+- ⚠️ AVAILABLE — Enabled but no usage found
+- ❌ MISSING — Not in permissions
 
-### Serena LSP (available but rarely used)
-- `find_symbol` — LSP symbol lookup (better than grep for code navigation)
-- `find_referencing_symbols` — Find all callers of a function
-- `rename_symbol` — Safe rename across entire codebase
-- `replace_symbol_body` — Replace a method/class definition precisely
-- `get_symbols_overview` — File structure without reading entire file
-- `think_about_collected_information` — Built-in reflection checkpoint
-- `think_about_task_adherence` — "Am I on track?" checkpoint
-- `open_dashboard` — Web UI for project browsing
-- Memories: write/read/edit/list — Per-project curated knowledge
+### 1. Gemini MCP (30+ tools)
+**Status:** ❌ MISSING from permissions
+- Tools live in ToolSearch but not whitelisted in settings.json
+- No usage found in hooks, scripts, or skills
+- Zero claude-mem observations referencing gemini
+- **Recommendation:** Add to permissions for `/evolve` skill adoption tracking
+- **High-value targets:** `gemini-deep-research` (competitor analysis), `gemini-analyze-image` (customer support), `gemini-generate-image` (marketing)
 
-### Apple-Docs WWDC (underused)
-- `search_wwdc_content` — Full-text search across ALL WWDC transcripts
-- `get_wwdc_code_examples` — Code snippets by framework/year
-- `find_related_wwdc_videos` — Topic-based video discovery
-- `get_documentation_updates` — What changed in latest SDK
-- `find_similar_apis` — Alternative API discovery
-- `get_platform_compatibility` — Cross-platform availability check
+### 2. Serena LSP & Memories
+**Status:** 📝 DOCUMENTED in `/evolve` skill only
+- Plugin enabled, zero permission blocks (MCP available)
+- **Active usage:** 16 Serena memory files across 6 projects (SaneProcess, SaneClip, SaneHosts)
+- Memories used for: release script fixes, DMG icon lessons, brand guidelines, audit findings
+- **Code tools unused:** No grep hits for `find_symbol`, `rename_symbol`, `replace_symbol_body`
+- **Recommendation:** Use LSP tools for Ruby refactoring (safer than grep-based edits)
 
-### macos-automator (493 scripts, rarely invoked)
-- `get_scripting_tips` — Search 493 pre-built scripts across 13 categories
-- `execute_script` — Run AppleScript/JXA with knowledge base IDs
-- Categories: browsers, mail, calendar, Finder, Terminal, accessibility
+### 3. Apple-Docs WWDC Tools
+**Status:** ⚠️ AVAILABLE but specialized tools unused
+- `search_apple_docs` ✅ used in session_start.rb verification
+- WWDC tools (`search_wwdc_content`, `get_wwdc_code_examples`, `find_related_wwdc_videos`) — ZERO usage
+- `get_documentation_updates`, `find_similar_apis` — NOT referenced anywhere
+- **Recommendation:** `/evolve` skill mentions these but doesn't use them. Add to research workflows.
 
-## Claude-Mem vs Serena Memories
-**Updated:** 2026-02-01 | **Status:** verified | **TTL:** 30d
-**Source:** ToolSearch + direct MCP testing
+### 4. macos-automator
+**Status:** 📝 DOCUMENTED for menu bar testing only
+- In permissions, mentioned in CLAUDE.md for SaneBar UI testing
+- `get_scripting_tips` (493 scripts) — ZERO invocations found
+- **Recommendation:** Use for repetitive AppleScript tasks (no evidence of current automation)
+
+## Claude-Mem vs Serena Memories — Adoption Comparison
+**Updated:** 2026-02-01 | **Status:** adoption-verified | **TTL:** 30d
+**Source:** Directory audit + health check + version inspection
 
 | Aspect | Claude-Mem | Serena Memories |
 |--------|-----------|-----------------|
 | Storage | SQLite + ChromaDB (port 37777) | Markdown files in `.serena/memories/` |
+| Version | v9.0.6 (Jan 22, 2026) | Plugin enabled, unknown version |
+| Status | ✅ Running (health OK) | ✅ 16 files across 6 projects |
 | Capture | Auto via hooks | Manual write_memory |
-| Search | Semantic vector search | File name / content grep |
-| Scope | Cross-project (global DB) | Per-project (directory-scoped) |
-| Format | Structured observations with timestamps | Free-form markdown |
-| Best for | "What did we learn about X?" | "Project-specific curated knowledge" |
+| Search | Semantic vector | File name / grep |
+| Adoption | HIGH (thousands of observations) | MODERATE (curated docs) |
+| Use cases | Bug patterns, API learnings | Release scripts, DMG fixes, brand rules |
 
-They're complementary, not duplicates. Claude-Mem is the automatic journal; Serena is the curated wiki.
+**Both actively used.** Claude-Mem is automatic context; Serena is curated project knowledge.
 
 ## Subagent Capability Matrix
 **Updated:** 2026-02-01 | **Status:** verified | **TTL:** 30d

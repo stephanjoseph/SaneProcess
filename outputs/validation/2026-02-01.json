@@ -1,28 +1,25 @@
 {
-  "generated_at": "2026-02-01T12:52:06-05:00",
+  "generated_at": "2026-02-01T15:50:23-05:00",
   "verdict": {
     "status": "BROKEN RELEASE PIPELINE",
-    "detail": "4 customer-facing issues - CUSTOMERS AFFECTED",
+    "detail": "6 customer-facing issues - CUSTOMERS AFFECTED",
     "color": "red"
   },
   "issues": [
-    "Q0 CONFIG: [apps/SaneBar] CLAUDE.md missing sister apps: SaneScript",
-    "Q0 CONFIG: [apps/SaneVideo] CLAUDE.md missing sister apps: SaneScript",
-    "Q0 CONFIG: [apps/SaneSync] CLAUDE.md missing sister apps: SaneScript",
-    "Q0 CONFIG: [apps/SaneAI] CLAUDE.md missing sister apps: SaneScript",
-    "Q0 CONFIG: [apps/SaneHosts] CLAUDE.md missing sister apps: SaneScript",
     "Q6 RELEASE: [SaneVideo] No GitHub releases found (customers can't download updates)",
     "Q6 RELEASE: [SaneSync] No GitHub releases found (customers can't download updates)",
     "Q6 RELEASE: [SaneClip] No GitHub releases found (customers can't download updates)",
     "Q6 RELEASE: [SaneAI] No GitHub releases found (customers can't download updates)",
+    "Q6 RELEASE: [SaneClick] Release URL returns 401: https://dist.saneclick.com/SaneClick-1.0.2.dmg",
+    "Q6 RELEASE: [SaneClick] No GitHub releases found (customers can't download updates)",
     "Q10 DOCS: [SaneBar] CHANGELOG missing version 1017"
   ],
   "warnings": [
     "CLOUDFLARE_API_TOKEN in both .zshrc and .zprofile (redundant, keep only .zprofile)",
     "LEMON_SQUEEZY_API_KEY in both .zshrc and .zprofile (redundant, keep only .zprofile)",
     "Q1: Only 0 block samples. Need 30+ for significance.",
-    "Q3: Only 18 scores. Need 30+ for significance.",
-    "Q4: Only 0 sessions tracked. Need 30+.",
+    "Q3: Only 27 scores. Need 30+ for significance.",
+    "Q4: Only 5 sessions tracked. Need 30+.",
     "Q6 RELEASE: [SaneBar] minimumSystemVersion 15.0 may block many users",
     "Q6 RELEASE: [SaneBar] minimumSystemVersion 15.0 may block many users",
     "Q6 RELEASE: [SaneBar] minimumSystemVersion 15.0 may block many users",
@@ -45,18 +42,15 @@
     "Q8 SIGNING: [SaneVideo] App may not be notarized (stapler check failed)",
     "Q8 SIGNING: [SaneClip] App may not be notarized (stapler check failed)",
     "Q8 SIGNING: [SaneHosts] App may not be notarized (stapler check failed)",
-    "Q10 DOCS: [SaneBar] README may not mention latest version 1017"
+    "Q8 SIGNING: [SaneClick] App may not be notarized (stapler check failed)",
+    "Q10 DOCS: [SaneBar] README may not mention latest version 1017",
+    "Q10 DOCS: [SaneClick] README may not mention latest version 102",
+    "Q10 DOCS: [SaneClick] No CHANGELOG.md found"
   ],
   "metrics": {
     "config_consistency": {
-      "issues": 5,
-      "details": [
-        "[apps/SaneBar] CLAUDE.md missing sister apps: SaneScript",
-        "[apps/SaneVideo] CLAUDE.md missing sister apps: SaneScript",
-        "[apps/SaneSync] CLAUDE.md missing sister apps: SaneScript",
-        "[apps/SaneAI] CLAUDE.md missing sister apps: SaneScript",
-        "[apps/SaneHosts] CLAUDE.md missing sister apps: SaneScript"
-      ]
+      "issues": 0,
+      "details": []
     },
     "block_accuracy": {
       "correct": 0,
@@ -66,44 +60,46 @@
       "sample_size": 0
     },
     "doom_loop_prevention": {
-      "caught": 0,
-      "missed": 0,
-      "catch_rate": null,
+      "caught": 2,
+      "missed": 4,
+      "catch_rate": 33.3,
       "breaker_trips": 0,
       "repeat_error_patterns": 0
     },
     "score_integrity": {
-      "sample_size": 18,
+      "sample_size": 27,
       "distribution": {
         "8": 10,
         "9": 1,
-        "10": 7
+        "10": 16
       },
-      "average": 8.83,
+      "average": 9.22,
       "std_dev": 0.96,
       "pct_8_or_higher": 100.0,
       "statistically_significant": false
     },
     "test_outcomes": {
-      "total_sessions": 0,
-      "sessions_tests_passing": 0,
-      "pass_rate": null
+      "total_sessions": 5,
+      "sessions_tests_passing": 1,
+      "pass_rate": 20.0
     },
     "trend": {
       "snapshots_analyzed": 5,
       "first_half_avg_issues": 2.0,
-      "second_half_avg_issues": 8.7,
+      "second_half_avg_issues": 7.7,
       "first_half_avg_score": null,
       "second_half_avg_score": null
     },
     "release_integrity": {
-      "issues": 4,
+      "issues": 6,
       "warnings": 18,
       "details": [
         "[SaneVideo] No GitHub releases found (customers can't download updates)",
         "[SaneSync] No GitHub releases found (customers can't download updates)",
         "[SaneClip] No GitHub releases found (customers can't download updates)",
         "[SaneAI] No GitHub releases found (customers can't download updates)",
+        "[SaneClick] Release URL returns 401: https://dist.saneclick.com/SaneClick-1.0.2.dmg",
+        "[SaneClick] No GitHub releases found (customers can't download updates)",
         "[SaneBar] minimumSystemVersion 15.0 may block many users",
         "[SaneBar] minimumSystemVersion 15.0 may block many users",
         "[SaneBar] minimumSystemVersion 15.0 may block many users",
@@ -131,12 +127,13 @@
     },
     "code_signing": {
       "issues": 0,
-      "warnings": 4,
+      "warnings": 5,
       "details": [
         "[SaneBar] App may not be notarized (stapler check failed)",
         "[SaneVideo] App may not be notarized (stapler check failed)",
         "[SaneClip] App may not be notarized (stapler check failed)",
-        "[SaneHosts] App may not be notarized (stapler check failed)"
+        "[SaneHosts] App may not be notarized (stapler check failed)",
+        "[SaneClick] App may not be notarized (stapler check failed)"
       ]
     },
     "support_infrastructure": {
@@ -146,17 +143,19 @@
     },
     "documentation_currency": {
       "issues": 1,
-      "warnings": 1,
+      "warnings": 3,
       "details": [
         "[SaneBar] CHANGELOG missing version 1017",
-        "[SaneBar] README may not mention latest version 1017"
+        "[SaneBar] README may not mention latest version 1017",
+        "[SaneClick] README may not mention latest version 102",
+        "[SaneClick] No CHANGELOG.md found"
       ]
     },
     "final": {
       "critical_failures": 0,
-      "customer_facing_critical": 4,
-      "data_gaps": 28,
-      "projects_with_data": 6
+      "customer_facing_critical": 6,
+      "data_gaps": 31,
+      "projects_with_data": 7
     }
   }
 }
