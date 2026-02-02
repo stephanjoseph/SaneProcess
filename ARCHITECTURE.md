@@ -528,6 +528,60 @@ Covers: build system rules, Info.plist templates, entitlements, security-scoped 
 | XcodeBuildMCP | Build/test automation | For Xcode projects |
 | macos-automator | Desktop UI automation | For menu bar apps |
 
+### Email & Customer Support Infrastructure
+
+**Worker:** `sane-email-automation` — Cloudflare Worker at `email-api.saneapps.com`
+**Source:** `~/SaneApps/infra/sane-email-automation/`
+**Database:** D1 `sane-email-db` (stores all inbound emails with category, status, sentiment)
+
+#### Inbound Email Flow
+
+```
+Customer → hi@saneapps.com → Cloudflare Email Workers → sane-email-automation
+                                                          ↓
+                                                    AI categorizes (praise/bug/feature/support/license/sales)
+                                                          ↓
+                                                    Auto-respond OR mark needs_human → D1 database
+```
+
+Also receives via Resend webhook at `/webhook/resend` (for `email.received` events).
+
+**Self-send loop safeguard:** Emails FROM hi@saneapps.com are blocked at both the `email()` handler (line 29) and the webhook handler (line 451). Added Jan 30, 2026 after 44 loop emails.
+
+#### API Endpoints
+
+| Endpoint | Method | What |
+|----------|--------|------|
+| `email-api.saneapps.com/api/emails/pending` | GET | Emails needing human review |
+| `email-api.saneapps.com/api/emails/today` | GET | Today's emails |
+| `email-api.saneapps.com/api/stats` | GET | Email counts by category |
+| `email-api.saneapps.com/api/digest` | GET | Daily digest |
+| `email-api.saneapps.com/api/send-reply` | POST | Send reply (emailId, body) |
+| `email-api.saneapps.com/api/testimonials` | GET | Customer testimonials |
+| `email-api.saneapps.com/webhook/resend` | POST | Resend inbound webhook |
+| `email-api.saneapps.com/webhook/lemonsqueezy` | POST | Purchase delivery webhook |
+
+#### Outbound (Resend API)
+
+Resend API (`api.resend.com/emails`) shows **outbound only**. Keychain: `resend` / `api_key`.
+Rate limit: 2 requests/sec. DO NOT batch-delete in tight loops.
+
+#### Direct D1 Queries
+
+```bash
+# All emails
+npx wrangler d1 execute sane-email-db --command "SELECT id, from_email, subject, category, status, created_at FROM emails ORDER BY created_at DESC" --remote
+
+# Mark resolved
+npx wrangler d1 execute sane-email-db --command "UPDATE emails SET status = 'resolved' WHERE id = X" --remote
+```
+
+#### Session Start: Quick Inbox Check
+
+```bash
+curl -s https://email-api.saneapps.com/api/emails/pending | python3 -m json.tool
+```
+
 ---
 
 ## 7. Test Coverage Map

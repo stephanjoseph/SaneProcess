@@ -55,7 +55,7 @@
           {
             "type": "command",
             "command": "[ -n \"$CLAUDE_CODE\" ] && [ -f .saneprocess ] && ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/session_start.rb || true",
-            "timeout": 5
+            "timeout": 15
           }
         ]
       }
@@ -97,7 +97,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "ruby ~/.claude/hooks/swift_format.rb || true",
+            "command": "ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/swift_format.rb || true",
             "timeout": 10
           }
         ]

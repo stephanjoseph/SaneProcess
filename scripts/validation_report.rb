@@ -176,65 +176,48 @@ class ValidationReport
       end
     end
 
-    # === PROJECT HOOK CONSISTENCY CHECK ===
-    # Audit all project settings.json for hook pattern consistency
-    required_hooks = %w[SessionStart UserPromptSubmit PreToolUse PostToolUse Stop]
-    deprecated_pattern = '~/.claude/hooks/'
-    valid_patterns = [
-      'SaneProcess/scripts/hooks/',     # Absolute path to SaneProcess (preferred)
-      './scripts/hooks/',               # Project-relative (if project has own hooks)
-      './Scripts/hooks/'                # Project-relative (capitalized)
-    ]
+    # === GLOBAL HOOK COMPLETENESS CHECK ===
+    # Hooks are defined GLOBALLY in ~/.claude/settings.json (source of truth).
+    # Projects opt-in via .saneprocess manifest. Claude Code merges global hooks at runtime.
+    # DO NOT check project-local settings.json for hooks — that causes false positives
+    # and adding hooks there recreates Session 15's duplicate-firing bug.
+    hook_file_map = {
+      'SessionStart' => 'session_start.rb',
+      'UserPromptSubmit' => 'saneprompt.rb',
+      'PreToolUse' => 'sanetools.rb',
+      'PostToolUse' => 'sanetrack.rb',
+      'Stop' => 'sanestop.rb'
+    }
 
-    PROJECTS.each do |project|
-      settings_file = File.join(SANE_APPS_ROOT, project, '.claude', 'settings.json')
-      next unless File.exist?(settings_file)
-
-      begin
-        settings = JSON.parse(File.read(settings_file))
-        hooks = settings['hooks'] || {}
-
-        # Check each required hook
-        required_hooks.each do |hook_name|
-          hook_cmd = hooks.dig(hook_name, 0, 'hooks', 0, 'command') || ''
-
-          if hook_cmd.empty?
-            issues_found << "[#{project}] Missing hook: #{hook_name}"
-          elsif hook_cmd.include?(deprecated_pattern)
-            issues_found << "[#{project}] Deprecated hook pattern in #{hook_name}: uses ~/.claude/hooks/"
-          elsif !valid_patterns.any? { |p| hook_cmd.include?(p) }
-            # Check if it at least references the right hook file
-            hook_file = hook_name == 'SessionStart' ? 'session_start.rb' :
-                        hook_name == 'UserPromptSubmit' ? 'saneprompt.rb' :
-                        hook_name == 'PreToolUse' ? 'sanetools.rb' :
-                        hook_name == 'PostToolUse' ? 'sanetrack.rb' : 'sanestop.rb'
-            unless hook_cmd.include?(hook_file)
-              issues_found << "[#{project}] #{hook_name} hook doesn't reference #{hook_file}"
-            end
-          end
-        end
-      rescue JSON::ParserError
-        # Already caught in deprecated plugins check
-      end
-    end
-
-    # === GLOBAL HOOK REGISTRATION CHECK ===
-    # Verify global settings.json hooks point to correct paths
     if File.exist?(global_settings)
       begin
         settings = JSON.parse(File.read(global_settings))
         hooks = settings['hooks'] || {}
 
-        # Check SessionStart uses valid hook pattern
-        session_start = hooks.dig('SessionStart', 0, 'hooks', 0, 'command') || ''
-        unless session_start.include?('session_start.rb')
-          issues_found << "Global SessionStart hook not configured (missing session_start.rb)"
-        end
-        if session_start.include?(deprecated_pattern)
-          issues_found << "Global settings uses deprecated ~/.claude/hooks/ pattern"
+        hook_file_map.each do |hook_name, hook_file|
+          hook_cmd = hooks.dig(hook_name, 0, 'hooks', 0, 'command') || ''
+          if hook_cmd.empty?
+            issues_found << "Global #{hook_name} hook missing"
+          elsif !hook_cmd.include?(hook_file)
+            issues_found << "Global #{hook_name} hook doesn't reference #{hook_file}"
+          end
         end
       rescue JSON::ParserError
-        # Already caught above
+        issues_found << "Global settings.json is corrupt (hooks check skipped)"
+      end
+    else
+      issues_found << "Global ~/.claude/settings.json missing (no hooks configured)"
+    end
+
+    # === PROJECT MANIFEST CHECK ===
+    # Projects opt-in to global hooks via .saneprocess manifest file.
+    # Note: identical local hooks are harmless — Claude Code deduplicates them at runtime
+    # (confirmed Session 15 research). Only flag DIVERGENT local hooks.
+    PROJECTS.each do |project|
+      project_root = File.join(SANE_APPS_ROOT, project)
+      manifest = File.join(project_root, '.saneprocess')
+      unless File.exist?(manifest)
+        issues_found << "[#{project}] Missing .saneprocess manifest (global hooks won't fire)"
       end
     end
 
@@ -662,12 +645,12 @@ class ValidationReport
       warnings << "[#{app_name}] appcast.xml missing Sparkle signatures"
     end
 
-    # Check minimumSystemVersion isn't blocking everyone
-    min_versions = content.scan(/minimumSystemVersion>([^<]+)</).flatten
-    min_versions.each do |v|
-      major = v.to_f.floor
+    # Check minimumSystemVersion on latest entry isn't blocking users
+    latest_min_version = content.scan(/minimumSystemVersion>([^<]+)</).flatten.first
+    if latest_min_version
+      major = latest_min_version.to_f.floor
       if major > 14  # macOS 14 is Sonoma (2023)
-        warnings << "[#{app_name}] minimumSystemVersion #{v} may block many users"
+        warnings << "[#{app_name}] Latest release requires macOS #{latest_min_version} (excludes Sonoma users)"
       end
     end
   end
@@ -676,15 +659,16 @@ class ValidationReport
     # Check if GitHub CLI is available
     return unless system('which gh > /dev/null 2>&1')
 
-    # Try to get releases for the app
+    # DMGs must NEVER be on GitHub releases — distribution is Cloudflare R2 only
     repo = "sane-apps/#{app_name}"
     result = `gh release list --repo #{repo} --limit 1 2>&1`
 
-    if result.include?('no releases found') || result.strip.empty?
-      issues << "[#{app_name}] No GitHub releases found (customers can't download updates)"
-    elsif result.include?('Could not resolve') || result.include?('not found')
-      # Repo doesn't exist yet, that's OK for unreleased apps
-      warnings << "[#{app_name}] GitHub repo not found (OK if unreleased)"
+    if result && !result.include?('no releases found') && !result.include?('not found') && !result.strip.empty?
+      # Releases exist — check if any contain DMG assets (forbidden)
+      assets = `gh release view --repo #{repo} --json assets -q '.assets[].name' 2>/dev/null`.strip
+      if assets.include?('.dmg')
+        issues << "[#{app_name}] DMG found on GitHub releases (FORBIDDEN — use Cloudflare R2 only)"
+      end
     end
   end
 
@@ -784,10 +768,13 @@ class ValidationReport
         issues_found << "[#{app_name}] App bundle has invalid or missing signature"
       end
 
-      # Check notarization status
-      staple_check = `stapler validate "#{app_bundle}" 2>&1`
-      unless staple_check.include?('valid')
-        warnings_found << "[#{app_name}] App may not be notarized (stapler check failed)"
+      # Check notarization on shipped DMGs only (DerivedData builds are never notarized)
+      latest_dmg = Dir.glob(File.join(project_path, 'releases', '*.dmg')).max_by { |f| File.mtime(f) }
+      if latest_dmg
+        staple_check = `stapler validate "#{latest_dmg}" 2>&1`
+        unless staple_check.include?('valid')
+          warnings_found << "[#{app_name}] Released DMG may not be notarized (stapler check failed)"
+        end
       end
     end
 
@@ -931,7 +918,11 @@ class ValidationReport
     return nil unless appcast
 
     content = File.read(appcast)
-    # Extract latest version (first sparkle:version)
+    # Extract latest marketing version (shortVersionString is what CHANGELOGs use)
+    match = content.match(/sparkle:shortVersionString="([^"]+)"/)
+    return match[1] if match
+
+    # Fallback to sparkle:version (build number) if no shortVersionString
     match = content.match(/sparkle:version="([^"]+)"/)
     match ? match[1] : nil
   end

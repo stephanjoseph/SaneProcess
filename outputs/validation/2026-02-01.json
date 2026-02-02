@@ -1,50 +1,24 @@
 {
-  "generated_at": "2026-02-01T15:50:23-05:00",
+  "generated_at": "2026-02-01T23:01:21-05:00",
   "verdict": {
-    "status": "BROKEN RELEASE PIPELINE",
-    "detail": "6 customer-facing issues - CUSTOMERS AFFECTED",
-    "color": "red"
+    "status": "PROMISING BUT UNPROVEN",
+    "detail": "Not enough data to confirm",
+    "color": "yellow"
   },
-  "issues": [
-    "Q6 RELEASE: [SaneVideo] No GitHub releases found (customers can't download updates)",
-    "Q6 RELEASE: [SaneSync] No GitHub releases found (customers can't download updates)",
-    "Q6 RELEASE: [SaneClip] No GitHub releases found (customers can't download updates)",
-    "Q6 RELEASE: [SaneAI] No GitHub releases found (customers can't download updates)",
-    "Q6 RELEASE: [SaneClick] Release URL returns 401: https://dist.saneclick.com/SaneClick-1.0.2.dmg",
-    "Q6 RELEASE: [SaneClick] No GitHub releases found (customers can't download updates)",
-    "Q10 DOCS: [SaneBar] CHANGELOG missing version 1017"
-  ],
+  "issues": [],
   "warnings": [
     "CLOUDFLARE_API_TOKEN in both .zshrc and .zprofile (redundant, keep only .zprofile)",
     "LEMON_SQUEEZY_API_KEY in both .zshrc and .zprofile (redundant, keep only .zprofile)",
     "Q1: Only 0 block samples. Need 30+ for significance.",
     "Q3: Only 27 scores. Need 30+ for significance.",
-    "Q4: Only 5 sessions tracked. Need 30+.",
-    "Q6 RELEASE: [SaneBar] minimumSystemVersion 15.0 may block many users",
-    "Q6 RELEASE: [SaneBar] minimumSystemVersion 15.0 may block many users",
-    "Q6 RELEASE: [SaneBar] minimumSystemVersion 15.0 may block many users",
-    "Q6 RELEASE: [SaneBar] minimumSystemVersion 15.0 may block many users",
-    "Q6 RELEASE: [SaneBar] minimumSystemVersion 15.0 may block many users",
-    "Q6 RELEASE: [SaneBar] minimumSystemVersion 15.0 may block many users",
-    "Q6 RELEASE: [SaneBar] minimumSystemVersion 15.0 may block many users",
-    "Q6 RELEASE: [SaneBar] minimumSystemVersion 15.0 may block many users",
-    "Q6 RELEASE: [SaneBar] minimumSystemVersion 15.0 may block many users",
-    "Q6 RELEASE: [SaneBar] minimumSystemVersion 15.0 may block many users",
-    "Q6 RELEASE: [SaneBar] minimumSystemVersion 15.0 may block many users",
-    "Q6 RELEASE: [SaneBar] minimumSystemVersion 15.0 may block many users",
+    "Q4: Only 6 sessions tracked. Need 30+.",
+    "Q6 RELEASE: [SaneBar] Latest release requires macOS 15.0 (excludes Sonoma users)",
     "Q6 RELEASE: [SaneVideo] No appcast.xml found (OK if not using Sparkle)",
     "Q6 RELEASE: [SaneSync] No appcast.xml found (OK if not using Sparkle)",
-    "Q6 RELEASE: [SaneClip] minimumSystemVersion 15.0 may block many users",
-    "Q6 RELEASE: [SaneClip] minimumSystemVersion 15.0 may block many users",
-    "Q6 RELEASE: [SaneClip] minimumSystemVersion 15.0 may block many users",
+    "Q6 RELEASE: [SaneClip] Latest release requires macOS 15.0 (excludes Sonoma users)",
     "Q6 RELEASE: [SaneAI] No appcast.xml found (OK if not using Sparkle)",
-    "Q8 SIGNING: [SaneBar] App may not be notarized (stapler check failed)",
-    "Q8 SIGNING: [SaneVideo] App may not be notarized (stapler check failed)",
-    "Q8 SIGNING: [SaneClip] App may not be notarized (stapler check failed)",
-    "Q8 SIGNING: [SaneHosts] App may not be notarized (stapler check failed)",
-    "Q8 SIGNING: [SaneClick] App may not be notarized (stapler check failed)",
-    "Q10 DOCS: [SaneBar] README may not mention latest version 1017",
-    "Q10 DOCS: [SaneClick] README may not mention latest version 102",
+    "Q10 DOCS: [SaneBar] README may not mention latest version 1.0.17",
+    "Q10 DOCS: [SaneClick] README may not mention latest version 1.0.2",
     "Q10 DOCS: [SaneClick] No CHANGELOG.md found"
   ],
   "metrics": {
@@ -60,9 +34,9 @@
       "sample_size": 0
     },
     "doom_loop_prevention": {
-      "caught": 2,
+      "caught": 1,
       "missed": 4,
-      "catch_rate": 33.3,
+      "catch_rate": 20.0,
       "breaker_trips": 0,
       "repeat_error_patterns": 0
     },
@@ -79,44 +53,25 @@
       "statistically_significant": false
     },
     "test_outcomes": {
-      "total_sessions": 5,
+      "total_sessions": 6,
       "sessions_tests_passing": 1,
-      "pass_rate": 20.0
+      "pass_rate": 16.7
     },
     "trend": {
       "snapshots_analyzed": 5,
       "first_half_avg_issues": 2.0,
-      "second_half_avg_issues": 7.7,
+      "second_half_avg_issues": 5.7,
       "first_half_avg_score": null,
       "second_half_avg_score": null
     },
     "release_integrity": {
-      "issues": 6,
-      "warnings": 18,
+      "issues": 0,
+      "warnings": 5,
       "details": [
-        "[SaneVideo] No GitHub releases found (customers can't download updates)",
-        "[SaneSync] No GitHub releases found (customers can't download updates)",
-        "[SaneClip] No GitHub releases found (customers can't download updates)",
-        "[SaneAI] No GitHub releases found (customers can't download updates)",
-        "[SaneClick] Release URL returns 401: https://dist.saneclick.com/SaneClick-1.0.2.dmg",
-        "[SaneClick] No GitHub releases found (customers can't download updates)",
-        "[SaneBar] minimumSystemVersion 15.0 may block many users",
-        "[SaneBar] minimumSystemVersion 15.0 may block many users",
-        "[SaneBar] minimumSystemVersion 15.0 may block many users",
-        "[SaneBar] minimumSystemVersion 15.0 may block many users",
-        "[SaneBar] minimumSystemVersion 15.0 may block many users",
-        "[SaneBar] minimumSystemVersion 15.0 may block many users",
-        "[SaneBar] minimumSystemVersion 15.0 may block many users",
-        "[SaneBar] minimumSystemVersion 15.0 may block many users",
-        "[SaneBar] minimumSystemVersion 15.0 may block many users",
-        "[SaneBar] minimumSystemVersion 15.0 may block many users",
-        "[SaneBar] minimumSystemVersion 15.0 may block many users",
-        "[SaneBar] minimumSystemVersion 15.0 may block many users",
+        "[SaneBar] Latest release requires macOS 15.0 (excludes Sonoma users)",
         "[SaneVideo] No appcast.xml found (OK if not using Sparkle)",
         "[SaneSync] No appcast.xml found (OK if not using Sparkle)",
-        "[SaneClip] minimumSystemVersion 15.0 may block many users",
-        "[SaneClip] minimumSystemVersion 15.0 may block many users",
-        "[SaneClip] minimumSystemVersion 15.0 may block many users",
+        "[SaneClip] Latest release requires macOS 15.0 (excludes Sonoma users)",
         "[SaneAI] No appcast.xml found (OK if not using Sparkle)"
       ]
     },
@@ -127,14 +82,8 @@
     },
     "code_signing": {
       "issues": 0,
-      "warnings": 5,
-      "details": [
-        "[SaneBar] App may not be notarized (stapler check failed)",
-        "[SaneVideo] App may not be notarized (stapler check failed)",
-        "[SaneClip] App may not be notarized (stapler check failed)",
-        "[SaneHosts] App may not be notarized (stapler check failed)",
-        "[SaneClick] App may not be notarized (stapler check failed)"
-      ]
+      "warnings": 0,
+      "details": []
     },
     "support_infrastructure": {
       "issues": 0,
@@ -142,19 +91,18 @@
       "details": []
     },
     "documentation_currency": {
-      "issues": 1,
+      "issues": 0,
       "warnings": 3,
       "details": [
-        "[SaneBar] CHANGELOG missing version 1017",
-        "[SaneBar] README may not mention latest version 1017",
-        "[SaneClick] README may not mention latest version 102",
+        "[SaneBar] README may not mention latest version 1.0.17",
+        "[SaneClick] README may not mention latest version 1.0.2",
         "[SaneClick] No CHANGELOG.md found"
       ]
     },
     "final": {
       "critical_failures": 0,
-      "customer_facing_critical": 6,
-      "data_gaps": 31,
+      "customer_facing_critical": 0,
+      "data_gaps": 13,
       "projects_with_data": 7
     }
   }

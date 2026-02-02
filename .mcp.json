@@ -15,12 +15,6 @@
         "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
       }
     },
-    "context7": {
-      "command": "node",
-      "args": [
-        "/Users/sj/.npm-global/lib/node_modules/@upstash/context7-mcp/dist/index.js"
-      ]
-    },
     "XcodeBuildMCP": {
       "command": "node",
       "args": [

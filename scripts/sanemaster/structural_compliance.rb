@@ -301,14 +301,39 @@ module SaneMasterModules
           return
         end
 
+        issues = []
+
+        # Check for hooks duplication (causes double-firing of every hook)
         if settings.key?('hooks')
+          hook_types = (settings['hooks'] || {}).keys
+          issues << "hooks duplicated (#{hook_types.join(', ')}) — causes double-firing"
+        end
+
+        # Check for permissions/plugins that mirror global exactly (noise, no value)
+        if File.exist?(GLOBAL_SETTINGS)
+          begin
+            global = JSON.parse(File.read(GLOBAL_SETTINGS))
+
+            if settings.key?('permissions') && settings['permissions'] == global['permissions']
+              issues << 'permissions identical to global'
+            end
+
+            if settings.key?('enabledPlugins') && settings['enabledPlugins'] == global['enabledPlugins']
+              issues << 'enabledPlugins identical to global'
+            end
+          rescue JSON::ParserError
+            # Skip comparison if global can't be parsed
+          end
+        end
+
+        if issues.empty?
+          @results[:config] << Result.new(pass: true, label: 'Project settings clean')
+        else
           @results[:config] << Result.new(
             pass: false, label: 'Project settings clean',
-            detail: 'has hooks section',
-            fix: 'Remove hooks from .claude/settings.json — hooks are global'
+            detail: issues.join('; '),
+            fix: 'Remove duplicated sections from .claude/settings.json — hooks/permissions/plugins are global. NOTE: Claude Code may auto-sync hooks back; verify after restart.'
           )
-        else
-          @results[:config] << Result.new(pass: true, label: 'Project settings clean')
         end
       end
 
