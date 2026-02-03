@@ -1,26 +1,27 @@
 # Session Handoff (Template)
 
-> **Project Docs:** [CLAUDE](CLAUDE.md) · [README](README.md) · [DEVELOPMENT](DEVELOPMENT.md) · [ARCHITECTURE](ARCHITECTURE.md) · [SESSION_HANDOFF](SESSION_HANDOFF.md)
->
-> You are reading **SESSION_HANDOFF.md** — what happened recently, what's pending.
-> For system design, see [ARCHITECTURE](ARCHITECTURE.md). For AI instructions, see [CLAUDE](CLAUDE.md).
+> Public-safe format. Do not include private data, customer info, secrets, or internal incidents.
 
 > Last updated: YYYY-MM-DD (Session NN - Short Title)
 
-## COMPLETED: Short Title (Session NN)
-
-### What Was Done
+## Done (Max 3)
 1. 
 2. 
 3. 
 
-### Tests
+## Tests
 - `command`
+- If not run, say why
 
-### SOP
-- Self-rating: X/10
+## Docs
+- Updated / Current / Needs attention
 
-### FOLLOW-UP
-- 
-- 
+## Next
+- Owner + action (e.g., "Alex: verify release build")
+- One line per item
+
+## Optional (Only if relevant)
+- Risks / gaps
+- Decisions made
+- Links to PRs/issues
 
