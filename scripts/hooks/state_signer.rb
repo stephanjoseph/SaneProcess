@@ -15,8 +15,9 @@
 #
 # Secret key sources (in order of preference):
 #   1. CLAUDE_HOOK_SECRET environment variable
-#   2. macOS Keychain (service: claude_hook, account: hmac_secret)
-#   3. Auto-generated on first use (stored in keychain)
+#   2. macOS Keychain (service: claude_hook, account: hmac_secret) — macOS only
+#   3. File-based (~/.claude_hook_secret, mode 600) — Linux/fallback
+#   4. Auto-generated on first use
 # ==============================================================================
 
 require 'json'
@@ -108,28 +109,41 @@ module StateSigner
 
     private
 
+    def macos?
+      RUBY_PLATFORM.include?('darwin')
+    end
+
     def load_or_generate_secret
-      # Priority 1: Environment variable
+      # Priority 1: Environment variable (all platforms)
       env_secret = ENV[SECRET_ENV_VAR]
       return env_secret if env_secret && !env_secret.empty?
 
       # Priority 2: macOS Keychain (not readable by Bash cat)
-      keychain_secret = read_keychain
-      return keychain_secret if keychain_secret
+      if macos?
+        keychain_secret = read_keychain
+        return keychain_secret if keychain_secret
+      end
 
-      # Priority 3: Migrate from legacy file to keychain
+      # Priority 3: File-based secret (primary on Linux, fallback on macOS)
       if File.exist?(SECRET_FILE)
         file_secret = File.read(SECRET_FILE).strip
         if file_secret && !file_secret.empty?
-          write_keychain(file_secret)
-          File.delete(SECRET_FILE) rescue nil
+          # On macOS, migrate to Keychain for extra security
+          if macos?
+            write_keychain(file_secret)
+            File.delete(SECRET_FILE) rescue nil
+          end
           return file_secret
         end
       end
 
-      # Priority 4: Generate new secret and store in keychain
+      # Priority 4: Generate new secret
       new_secret = SecureRandom.hex(32)
-      write_keychain(new_secret)
+      if macos?
+        write_keychain(new_secret)
+      else
+        write_secret_file(new_secret)
+      end
       new_secret
     end
 
@@ -143,9 +157,14 @@ module StateSigner
     def write_keychain(secret)
       # Delete existing entry if present (security add fails on duplicate)
       system("security delete-generic-password -s #{KEYCHAIN_SERVICE} -a #{KEYCHAIN_ACCOUNT} 2>/dev/null")
-      system("security add-generic-password -s #{KEYCHAIN_SERVICE} -a #{KEYCHAIN_ACCOUNT} -w #{secret}")
+      success = system("security add-generic-password -s #{KEYCHAIN_SERVICE} -a #{KEYCHAIN_ACCOUNT} -w #{secret} 2>/dev/null")
+      # Fall back to file if Keychain write fails
+      write_secret_file(secret) unless success
     rescue StandardError
-      # Fallback: write to file if keychain fails (e.g., Linux)
+      write_secret_file(secret)
+    end
+
+    def write_secret_file(secret)
       File.write(SECRET_FILE, secret)
       File.chmod(0o600, SECRET_FILE)
     end

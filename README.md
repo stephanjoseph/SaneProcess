@@ -4,7 +4,7 @@
 
 SaneProcess is a hook-based enforcement framework for Claude Code. It kills orphaned processes, stops doom loops, and forces research before edits.
 
-412 tests. MIT licensed. Ruby. macOS.
+412 tests. MIT licensed. Ruby. macOS + Linux.
 
 ---
 
@@ -150,7 +150,7 @@ If an MCP server isn't available, its category auto-completes. The gate adapts t
 
 ## Security
 
-- **HMAC-signed state** — `state.json` is signed to detect tampering. Key stored in macOS Keychain.
+- **HMAC-signed state** — `state.json` is signed to detect tampering. Key stored in macOS Keychain (macOS) or `~/.claude_hook_secret` with 600 permissions (Linux).
 - **Blocked system paths** — Prevents edits to `/etc/`, `.ssh/`, `.aws/`, `.gnupg/`
 - **Inline script detection** — `python -c`, `ruby -e`, `node -e` blocked as bash mutations
 - **Sensitive file confirmation** — First edit to CI/CD configs, entitlements, Dockerfiles requires confirmation
@@ -222,8 +222,8 @@ Check that `.claude/settings.json` contains hook entries pointing to your `scrip
 
 ## Requirements
 
-- **macOS** (uses Keychain for HMAC key storage, `ps` for process cleanup)
-- **Ruby** (ships with macOS)
+- **macOS or Linux** (process cleanup uses POSIX `ps`; HMAC key uses Keychain on macOS, file-based on Linux)
+- **Ruby** (ships with macOS; `apt install ruby` or `dnf install ruby` on Linux)
 - **Claude Code** (`npm install -g @anthropic-ai/claude-code`)
 
 ---

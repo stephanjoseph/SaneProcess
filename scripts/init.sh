@@ -38,6 +38,31 @@ echo -e "${BLUE}╚════════════════════�
 echo ""
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# DETECT PLATFORM
+# ═══════════════════════════════════════════════════════════════════════════════
+
+OS="$(uname -s)"
+case "$OS" in
+    Darwin)
+        PLATFORM="macOS"
+        ;;
+    Linux)
+        PLATFORM="Linux"
+        ;;
+    *)
+        PLATFORM="$OS"
+        echo -e "${YELLOW}Warning: Untested platform ($OS). Proceeding anyway.${NC}"
+        ;;
+esac
+
+echo -e "   Platform: ${GREEN}${PLATFORM}${NC}"
+if [ "$PLATFORM" = "Linux" ]; then
+    echo -e "   ${YELLOW}Note:${NC} HMAC signing uses file-based key (~/.claude_hook_secret)"
+    echo -e "   ${YELLOW}Note:${NC} On macOS, the key is stored in Keychain instead"
+fi
+echo ""
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # CHECK DEPENDENCIES
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -45,7 +70,11 @@ echo "Checking dependencies..."
 
 if ! command -v ruby &>/dev/null; then
     echo -e "${RED}Error: Ruby not found${NC}"
-    echo "   macOS ships with Ruby. If removed, install via: brew install ruby"
+    if [ "$PLATFORM" = "macOS" ]; then
+        echo "   macOS ships with Ruby. If removed, install via: brew install ruby"
+    else
+        echo "   Install via: sudo apt install ruby (Debian/Ubuntu) or sudo dnf install ruby (Fedora)"
+    fi
     exit 1
 fi
 echo -e "   ${GREEN}✓${NC} ruby $(ruby -v | head -c 20)"
