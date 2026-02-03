@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/hero-shield.jpeg" alt="SaneProcess" width="100%">
+</p>
+
 # SaneProcess
 
 **Stop Claude Code from wasting your time and crashing your machine.**
