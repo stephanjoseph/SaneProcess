@@ -11,7 +11,7 @@ You now have a complete human-AI development system for building macOS applicati
 **What is this?** A battle-test2ed process for working with Claude Code. It turns "AI that sometimes helps" into "AI that reliably ships code" through explicit rules, automated enforcement, and cross-session memory.
 
 **Why does it work?**
-- **Rules are memorable** - "TWO STRIKES? INVESTIGATE" sticks better than "stop after failures"
+- **Rules are memorable** - "TWO STRIKES? STOP AND CHECK" sticks better than "stop after failures"
 - **Enforcement is automatic** - Hooks catch mistakes before they waste time
 - **Memory persists** - Bug patterns learned once, never repeated
 - **Self-rating builds discipline** - You see compliance improve session over session
@@ -282,30 +282,31 @@ Start minimal, add commands as needed. Reference the full SaneMaster.rb for:
 # 2. The Golden Rules
 
 These rules are **mandatory**. Self-rate adherence after every task.
+Rules are complementary — if multiple apply, follow all. When in doubt, follow the stricter rule.
 
 ### Why Catchy Rule Names?
 
 Memorable rules + clear tool names = **human can audit in real-time**.
 
-Names like "THEIR HOUSE, THEIR RULES" aren't just mnemonics—they're a **shared vocabulary**. When I say "Rule #5" you instantly know whether I'm complying or drifting. This lets you catch mistakes as they happen instead of after 20 minutes of debugging.
+Names like "HOUSE RULES, USE TOOLS" aren't just mnemonics—they're a **shared vocabulary**. When I say "Rule #5" you instantly know whether I'm complying or drifting. This lets you catch mistakes as they happen instead of after 20 minutes of debugging.
 
 ---
 
-## Rule #0: NAME THE RULE BEFORE YOU CODE
+## Rule #0: NAME IT BEFORE YOU TAME IT
 
 ✅ DO: State which rules apply before writing code
 ❌ DON'T: Start coding without thinking about rules
 
 ```
-🟢 RIGHT: "This uses an API → Rule #2: VERIFY BEFORE YOU TRY"
-🟢 RIGHT: "New file needed → Rule #9: NEW FILE? GEN THAT PILE"
+🟢 RIGHT: "This uses an API → Rule #2: VERIFY, THEN TRY"
+🟢 RIGHT: "New file needed → Rule #9: NEW FILE? GEN THE PILE"
 🔴 WRONG: "Let me just start coding..."
 🔴 WRONG: "I'll figure out the rules as I go"
 ```
 
 ---
 
-## Rule #1: STAY IN YOUR LANE
+## Rule #1: STAY IN LANE, NO PAIN
 
 ✅ DO: Save all files inside the project folder
 ❌ DON'T: Create files outside project without asking
@@ -321,7 +322,7 @@ If file must go elsewhere → ask user where.
 
 ---
 
-## Rule #2: VERIFY BEFORE YOU TRY
+## Rule #2: VERIFY, THEN TRY
 
 ✅ DO: Verify APIs exist before using them
 ❌ DON'T: Assume an API exists from memory or web search
@@ -335,7 +336,7 @@ If file must go elsewhere → ask user where.
 
 ---
 
-## Rule #3: TWO STRIKES? INVESTIGATE
+## Rule #3: TWO STRIKES? STOP AND CHECK
 
 ✅ DO: After 2 failures → stop, verify API, check docs
 ❌ DON'T: Guess a third time without researching
@@ -365,7 +366,7 @@ Stopping IS compliance. Guessing a 3rd time is the violation.
 
 ---
 
-## Rule #5: THEIR HOUSE, THEIR RULES
+## Rule #5: HOUSE RULES, USE TOOLS
 
 ✅ DO: Use project's build tool (Makefile, package.json, Scripts/, etc.)
 ❌ DON'T: Use raw build commands
@@ -428,7 +429,7 @@ killall -9 <app-name>         # KILL
 
 ---
 
-## Rule #9: NEW FILE? GEN THAT PILE
+## Rule #9: NEW FILE? GEN THE PILE
 
 ✅ DO: Run project generator after creating new files
 ❌ DON'T: Forget to update project configuration
@@ -1307,22 +1308,22 @@ killall -9 <app-name>
 │                    SANEPROCESS QUICK REF                   │
 ├────────────────────────────────────────────────────────────┤
 │ GOLDEN RULES                                               │
-│   #0  NAME THE RULE BEFORE YOU CODE                        │
-│   #1  STAY IN YOUR LANE (files in project)                 │
-│   #2  VERIFY BEFORE YOU TRY (check docs)                   │
-│   #3  TWO STRIKES? INVESTIGATE                             │
-│   #4  GREEN MEANS GO (test2s must pass)                     │
-│   #5  THEIR HOUSE, THEIR RULES (use project tools)         │
-│   #6  BUILD, KILL, LAUNCH, LOG                             │
-│   #7  NO TEST? NO REST                                     │
-│   #8  BUG FOUND? WRITE IT DOWN                             │
-│   #9  NEW FILE? GEN THAT PILE                              │
-│   #10 FIVE HUNDRED'S FINE, EIGHT'S THE LINE                │
-│   #11 TOOL BROKE? FIX THE YOKE                             │
-│   #12 TALK WHILE I WALK (subagents)                        │
-│   #13 CONTEXT OR CHAOS (maintain CLAUDE.md)                │
-│   #14 PROMPT LIKE A PRO (specific prompts)                 │
-│   #15 REVIEW BEFORE YOU SHIP (self-review)                 │
+│  #0  NAME IT BEFORE YOU TAME IT                            │
+│  #1  STAY IN LANE, NO PAIN (files in project)              │
+│  #2  VERIFY, THEN TRY (check docs)                         │
+│  #3  TWO STRIKES? STOP AND CHECK                           │
+│  #4  GREEN MEANS GO (test2s must pass)                     │
+│  #5  HOUSE RULES, USE TOOLS (use project tools)            │
+│  #6  BUILD, KILL, LAUNCH, LOG                              │
+│  #7  NO TEST? NO REST                                      │
+│  #8  BUG FOUND? WRITE IT DOWN                              │
+│  #9  NEW FILE? GEN THE PILE                                │
+│  #10 FIVE HUNDRED'S FINE, EIGHT'S THE LINE                 │
+│  #11 TOOL BROKE? FIX THE YOKE                              │
+│  #12 TALK WHILE I WALK (subagents)                         │
+│  #13 CONTEXT OR CHAOS (maintain CLAUDE.md)                 │
+│  #14 PROMPT LIKE A PRO (specific prompts)                  │
+│  #15 REVIEW BEFORE YOU SHIP (self-review)                  │
 ├────────────────────────────────────────────────────────────┤
 │ RESEARCH ORDER                                             │
 │   1. apple-docs MCP (Apple APIs)                           │

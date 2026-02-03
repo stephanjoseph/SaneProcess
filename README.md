@@ -124,19 +124,20 @@ Tools are categorized by blast radius:
 ## The Golden Rules (16 total, numbered #0–#15)
 
 **Source of truth:** `scripts/hooks/rule_tracker.rb` (used in enforcement logs).
+**No conflicts:** Rules are complementary — if multiple apply, follow all. When in doubt, follow the stricter rule.
 
 **Core (enforced by hooks):**
-- #2 VERIFY BEFORE YOU TRY
-- #3 TWO STRIKES? INVESTIGATE
+- #2 VERIFY, THEN TRY
+- #3 TWO STRIKES? STOP AND CHECK
 - #4 GREEN MEANS GO
 
 **Supporting (enforced by hooks):**
-- #0 NAME THE RULE BEFORE YOU CODE
-- #1 STAY IN YOUR LANE
-- #5 THEIR HOUSE, THEIR RULES (use project tools)
+- #0 NAME IT BEFORE YOU TAME IT
+- #1 STAY IN LANE, NO PAIN
+- #5 HOUSE RULES, USE TOOLS
 - #7 NO TEST? NO REST
 - #8 BUG FOUND? WRITE IT DOWN
-- #9 NEW FILE? GEN THAT PILE
+- #9 NEW FILE? GEN THE PILE
 - #10 FIVE HUNDRED'S FINE, EIGHT'S THE LINE
 
 **Operational (expected every session):**

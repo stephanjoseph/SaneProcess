@@ -413,16 +413,16 @@ This project uses **SaneProcess** for Claude Code SOP enforcement.
 ## The 16 Golden Rules
 
 ```
-#0  NAME THE RULE BEFORE YOU CODE
-#1  STAY IN YOUR LANE (files in project)
-#2  VERIFY BEFORE YOU TRY (check docs first)
-#3  TWO STRIKES? INVESTIGATE
+#0  NAME IT BEFORE YOU TAME IT
+#1  STAY IN LANE, NO PAIN (files in project)
+#2  VERIFY, THEN TRY (check docs first)
+#3  TWO STRIKES? STOP AND CHECK
 #4  GREEN MEANS GO (tests must pass)
-#5  THEIR HOUSE, THEIR RULES (use project tools)
+#5  HOUSE RULES, USE TOOLS (use project tools)
 #6  BUILD, KILL, LAUNCH, LOG
 #7  NO TEST? NO REST
 #8  BUG FOUND? WRITE IT DOWN
-#9  NEW FILE? GEN THAT PILE
+#9  NEW FILE? GEN THE PILE
 #10 FIVE HUNDRED'S FINE, EIGHT'S THE LINE
 #11 TOOL BROKE? FIX THE YOKE
 #12 TALK WHILE I WALK (stay responsive)

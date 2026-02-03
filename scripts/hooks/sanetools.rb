@@ -281,7 +281,7 @@ end
 
 def detect_rule_from_reason(reason)
   case reason
-  when /Rule #1|BLOCKED PATH|STAY IN YOUR LANE/i then 'Rule #1'
+  when /Rule #1|BLOCKED PATH|STAY IN YOUR LANE|STAY IN LANE/i then 'Rule #1'
   when /Rule #2|RESEARCH.*INCOMPLETE|VERIFY/i then 'Rule #2'
   when /Rule #3|CIRCUIT BREAKER/i then 'Rule #3'
   when /Rule #10|FILE SIZE|lines.*limit/i then 'Rule #10'

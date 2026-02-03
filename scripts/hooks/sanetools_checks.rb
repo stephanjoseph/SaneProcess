@@ -380,7 +380,7 @@ module SaneToolsChecks
       "Cannot edit until ALL #{total} research categories are done.\n" \
       "MISSING (do these NOW):\n" \
       "#{missing_instructions}\n" \
-      "Rule #1: VERIFY BEFORE YOU TRY. Research once, succeed once.\n" \
+      "Rule #2: VERIFY, THEN TRY. Research once, succeed once.\n" \
       "Reset: rr- (clear research to start over)"
     end
 

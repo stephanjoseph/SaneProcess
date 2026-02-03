@@ -47,8 +47,8 @@ These rules enforce the scientific method. Not optional guidelines - **the hooks
 
 | # | Rule | Scientific Method | What Hooks Do |
 |---|------|-------------------|---------------|
-| #2 | **VERIFY BEFORE YOU TRY** | Observe before hypothesizing | Blocks edits until 4 research categories done |
-| #3 | **TWO STRIKES? INVESTIGATE** | Reject failed hypothesis | Circuit breaker trips at 3 failures |
+| #2 | **VERIFY, THEN TRY** | Observe before hypothesizing | Blocks edits until 4 research categories done |
+| #3 | **TWO STRIKES? STOP AND CHECK** | Reject failed hypothesis | Circuit breaker trips at 3 failures |
 | #4 | **TESTS MUST PASS** | Experimental validation | Tracks test results, blocks on red |
 
 **This is the core.** Guessing is not science. Verify → Hypothesize → Test → Learn.
@@ -57,12 +57,12 @@ These rules enforce the scientific method. Not optional guidelines - **the hooks
 
 | # | Rule | Purpose |
 |---|------|---------|
-| #0 | **NAME RULE FIRST** | State which rule applies before acting |
-| #1 | **STAY IN LANE** | No edits outside project scope |
-| #5 | **THEIR HOUSE THEIR RULES** | Use project conventions, not preferences |
-| #7 | **NO TEST NO REST** | No tautologies (`#expect(true)`) |
-| #8 | **BUG FOUND? WRITE DOWN** | Document bugs in memory |
-| #9 | **USE GENERATORS** | Use project scaffolding tools |
+| #0 | **NAME IT BEFORE YOU TAME IT** | State which rule applies before acting |
+| #1 | **STAY IN LANE, NO PAIN** | No edits outside project scope |
+| #5 | **HOUSE RULES, USE TOOLS** | Use project conventions, not preferences |
+| #7 | **NO TEST? NO REST** | No tautologies (`#expect(true)`) |
+| #8 | **BUG FOUND? WRITE IT DOWN** | Document bugs in memory |
+| #9 | **NEW FILE? GEN THE PILE** | Use project scaffolding tools |
 | #10 | **FILE SIZE LIMIT** | Max 500 lines (800 hard limit) |
 
 ### Research Categories (Required Before Edits)
