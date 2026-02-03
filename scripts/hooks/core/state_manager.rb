@@ -90,6 +90,7 @@ module StateManager
     },
     # === INTELLIGENCE: Pattern learning sections ===
     action_log: [],  # Last 20 actions for correlation
+    reminders: {},   # Reminder timestamps + counts (rewind/context/explore)
     learnings: [],   # Learned patterns from user corrections
     patterns: {
       weak_spots: {},     # { "rule_N" => count } - rules frequently violated

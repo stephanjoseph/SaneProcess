@@ -14,15 +14,22 @@ module SaneMasterModules
       puts 'Scanning for unused code...'
       puts ''
 
-      project_path = File.join(Dir.pwd, '__PROJECT_NAME__.xcodeproj')
-      unless File.exist?(project_path)
-        puts "❌ Project not found at #{project_path}"
+      if project_workspace && !project_workspace.to_s.empty?
+        container_path = File.join(Dir.pwd, project_workspace)
+        container_args = ['--workspace', container_path]
+      else
+        container_path = File.join(Dir.pwd, project_xcodeproj)
+        container_args = ['--project', container_path]
+      end
+
+      unless File.exist?(container_path)
+        puts "❌ Project not found at #{container_path}"
         return
       end
 
       build_args = [
-        '--project', project_path,
-        '--schemes', '__PROJECT_NAME__',
+        *container_args,
+        '--schemes', project_scheme,
         '--format', 'xcode'
       ]
 
@@ -44,16 +51,23 @@ module SaneMasterModules
       puts 'Scanning for deprecated API usage...'
       puts ''
 
-      project_path = File.join(Dir.pwd, '__PROJECT_NAME__.xcodeproj')
-      unless File.exist?(project_path)
-        puts "❌ Project not found at #{project_path}"
+      if project_workspace && !project_workspace.to_s.empty?
+        container_path = File.join(Dir.pwd, project_workspace)
+        container_args = ['-workspace', container_path]
+      else
+        container_path = File.join(Dir.pwd, project_xcodeproj)
+        container_args = ['-project', container_path]
+      end
+
+      unless File.exist?(container_path)
+        puts "❌ Project not found at #{container_path}"
         return
       end
 
       puts 'Building to capture deprecation warnings...'
       puts ''
 
-      build_output = `xcodebuild -project #{project_path} -scheme __PROJECT_NAME__ -destination 'platform=macOS,arch=arm64' clean build 2>&1`
+      build_output = `xcodebuild #{container_args.join(' ')} -scheme #{project_scheme} -destination 'platform=macOS,arch=arm64' clean build 2>&1`
 
       deprecation_warnings = extract_deprecation_warnings(build_output)
 
@@ -79,7 +93,7 @@ module SaneMasterModules
       puts 'Scanning for concurrency patterns...'
       puts ''
 
-      source_dir = File.join(Dir.pwd, '__PROJECT_NAME__')
+      source_dir = File.join(Dir.pwd, project_app_dir)
       unless File.directory?(source_dir)
         puts "❌ Source directory not found: #{source_dir}"
         return
@@ -344,7 +358,12 @@ module SaneMasterModules
 
     def check_build(results)
       puts "\n1️⃣  Build Verification..."
-      build_output = `xcodebuild -project __PROJECT_NAME__.xcodeproj -scheme __PROJECT_NAME__ -destination "platform=macOS,arch=arm64" build 2>&1`
+      container_arg = if project_workspace && !project_workspace.to_s.empty?
+                        "-workspace #{project_workspace}"
+                      else
+                        "-project #{project_xcodeproj}"
+                      end
+      build_output = `xcodebuild #{container_arg} -scheme #{project_scheme} -destination "platform=macOS,arch=arm64" build 2>&1`
       if build_output.include?('BUILD SUCCEEDED')
         puts '   ✅ Build successful'
         results[:passed] << 'Build'
@@ -362,7 +381,7 @@ module SaneMasterModules
     def check_xcodegen_sync_fast(results)
       puts "\n2️⃣  XcodeGen Project Sync..."
       project_yml = 'project.yml'
-      project_pbx = '__PROJECT_NAME__.xcodeproj/project.pbxproj'
+      project_pbx = File.join(project_xcodeproj, 'project.pbxproj')
       if File.exist?(project_yml) && File.exist?(project_pbx)
         yml_mtime = File.mtime(project_yml)
         pbx_mtime = File.mtime(project_pbx)

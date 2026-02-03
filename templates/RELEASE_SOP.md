@@ -12,28 +12,23 @@ All SaneApps macOS apps use **Cloudflare** for update distribution:
 
 ## Release Checklist
 
-### 1. Build & Sign DMG
+### 1. Build, Sign, Notarize, DMG (Single Command)
 
 ```bash
-# Build release archive
-xcodebuild archive -project {App}.xcodeproj -scheme {App} -configuration Release -archivePath /tmp/{App}.xcarchive
+# Unified entrypoint (uses per-project .saneprocess config)
+./scripts/SaneMaster.rb release
 
-# Export DMG (or use create-dmg)
-# Sign with Sparkle
-sign_update /path/to/{App}-{version}.dmg --account "EdDSA Private Key"
+# Full release (version bump + tests + GitHub metadata)
+./scripts/SaneMaster.rb release --full --version X.Y.Z --notes "Release notes"
 ```
 
 ### 2. Upload to Cloudflare R2
 
-**Use Cloudflare API directly (NOT wrangler):**
+**Use wrangler for R2 uploads (single shared bucket):**
 
 ```bash
-CF_TOKEN=$(security find-generic-password -s cloudflare -a api_token -w)
-CF_ACCOUNT="$CLOUDFLARE_ACCOUNT_ID"
-
-curl -X PUT "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/r2/buckets/sanebar-downloads/objects/{App}-{version}.dmg" \
-  -H "Authorization: Bearer $CF_TOKEN" \
-  --data-binary @/path/to/{App}-{version}.dmg
+npx wrangler r2 object put sanebar-downloads/{App}-{version}.dmg \
+  --file="releases/{App}-{version}.dmg" --content-type="application/octet-stream" --remote
 ```
 
 ### 3. Update Appcast
@@ -110,6 +105,6 @@ curl -X POST "https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records" 
 2. **NEVER use GitHub Pages** for websites — use Cloudflare Pages
 3. **ALWAYS sign DMGs** with Sparkle EdDSA
 4. **ALWAYS verify** downloads work before announcing release
-5. **Use `wrangler`** for Pages deploy and R2 uploads (Cloudflare API for everything else)
+5. **Use `wrangler`** for Pages deploy and R2 uploads
 6. **ONE Sparkle key for ALL SaneApps** — keychain account `"EdDSA Private Key"`, public key `7Pl/8cwfb2vm4Dm65AByslkMCScLJ9tbGlwGGx81qYU=`. NEVER generate per-project keys.
 7. **Verify SUPublicEDKey in built Info.plist** matches the shared key before shipping

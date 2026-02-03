@@ -2,7 +2,7 @@
 # frozen_string_literal: true
 
 # ==============================================================================
-# SaneMaster: Professional Automation Suite for __PROJECT_NAME__
+# SaneMaster: Professional Automation Suite for SaneApps
 # ==============================================================================
 # Modular architecture - see Scripts/sanemaster/ for implementations:
 #   base.rb        - Shared constants and utilities
@@ -15,6 +15,9 @@
 #   verify.rb       - Build, test execution, permissions
 #   quality.rb      - Dead code, deprecations, Swift 6 compliance
 # ==============================================================================
+
+require 'open3'
+require 'json'
 
 # Load all modules
 require_relative 'sanemaster/base'
@@ -33,6 +36,7 @@ require_relative 'sanemaster/meta'
 require_relative 'sanemaster/session'
 require_relative 'sanemaster/circuit_breaker_state'
 require_relative 'sanemaster/structural_compliance'
+require_relative 'sanemaster/release'
 
 class SaneMaster
   include SaneMasterModules::Base
@@ -50,6 +54,7 @@ class SaneMaster
   include SaneMasterModules::Meta
   include SaneMasterModules::Session
   include SaneMasterModules::StructuralCompliance
+  include SaneMasterModules::Release
 
   # ═══════════════════════════════════════════════════════════════════════════
   # COMMAND REFERENCE - Organized by category for easy discovery
@@ -62,7 +67,8 @@ class SaneMaster
         'clean' => { args: '[--nuclear]', desc: 'Wipe build cache and test states' },
         'lint' => { args: '', desc: 'Run SwiftLint and auto-fix issues' },
         'audit' => { args: '', desc: 'Scan for missing accessibility identifiers' },
-        'system_check' => { args: '', desc: 'Verify unified hook system across all projects' }
+        'system_check' => { args: '', desc: 'Verify unified hook system across all projects' },
+        'release' => { args: '[--full|--skip-notarize|--version X.Y.Z|--notes "..."]', desc: 'Build, sign, notarize, and package a DMG' }
       }
     },
     gen: {
@@ -152,6 +158,9 @@ class SaneMaster
 
   # C4 FIX: Dynamically detect bundle ID from project.yml or xcodeproj
   def detect_bundle_id
+    config_bundle = saneprocess_config['bundle_id'] || saneprocess_config.dig('release', 'bundle_id')
+    return config_bundle if config_bundle && !config_bundle.to_s.empty?
+
     # Try to read from project.yml first (XcodeGen projects)
     if File.exist?('project.yml')
       begin
@@ -174,17 +183,30 @@ class SaneMaster
     # Try to detect from xcodeproj files
     xcodeprojs = Dir.glob('*.xcodeproj')
     if xcodeprojs.any?
-      project_name = File.basename(xcodeprojs.first, '.xcodeproj')
-      # Use xcodebuild to get the bundle ID
-      output = `xcodebuild -project "#{xcodeprojs.first}" -scheme "#{project_name}" -showBuildSettings 2>/dev/null | grep PRODUCT_BUNDLE_IDENTIFIER`
-      if output =~ /PRODUCT_BUNDLE_IDENTIFIER\s*=\s*(\S+)/
-        return $1
+      project_path = xcodeprojs.first
+      scheme = detect_scheme(project_path)
+      if scheme
+        output, status = Open3.capture2e('xcodebuild', '-project', project_path, '-scheme', scheme, '-showBuildSettings')
+        if status.success? && output =~ /PRODUCT_BUNDLE_IDENTIFIER\s*=\s*(\S+)/
+          return $1
+        end
       end
     end
 
     # Fallback: derive from project directory name
     project_dir = File.basename(Dir.pwd)
     "com.sanevideo.#{project_dir.downcase}"
+  end
+
+  def detect_scheme(project_path)
+    output, status = Open3.capture2e('xcodebuild', '-list', '-json', '-project', project_path)
+    return File.basename(project_path, '.xcodeproj') unless status.success?
+
+    json = JSON.parse(output)
+    schemes = json.dig('project', 'schemes') || []
+    schemes.find { |name| !name.include?('Tests') } || schemes.first || File.basename(project_path, '.xcodeproj')
+  rescue JSON::ParserError, StandardError
+    File.basename(project_path, '.xcodeproj')
   end
 
   def run(args)
@@ -253,6 +275,8 @@ class SaneMaster
       audit_project
     when 'system_check'
       audit_unified
+    when 'release'
+      release(args)
     when 'qa'
       system(File.join(__dir__, 'qa.rb'))
     when 'validate_test_references', 'validate-tests'
@@ -446,7 +470,7 @@ class SaneMaster
     puts '🛡️ --- [ SANEMASTER BINARY AUDIT ] ---'
 
     puts 'Searching for production binary...'
-    build_settings = `xcodebuild -scheme __PROJECT_NAME__ -showBuildSettings 2>/dev/null`
+    build_settings = `xcodebuild -scheme #{project_scheme} -showBuildSettings 2>/dev/null`
     target_build_dir = build_settings.match(/TARGET_BUILD_DIR = (.*)/)&.[](1)
     executable_path = build_settings.match(/EXECUTABLE_PATH = (.*)/)&.[](1)
 
@@ -488,7 +512,7 @@ class SaneMaster
   def print_help
     puts <<~HEADER
       ┌─────────────────────────────────────────────────────────────┐
-      │  SaneMaster - Professional Automation Suite for __PROJECT_NAME__    │
+      │  SaneMaster - Professional Automation Suite for #{project_name}    │
       └─────────────────────────────────────────────────────────────┘
 
       Quick Start:

@@ -65,6 +65,10 @@ module SaneMasterModules
         check_plugin_cache
         check_commands_runnable
         check_xcode_project
+        check_release_config
+        check_release_script
+        check_release_env_absent
+        check_sanemaster_wrapper
 
         # Tier 3: Best practices
         check_mcp_consistency
@@ -445,6 +449,103 @@ module SaneMasterModules
             pass: false, label: 'Xcode valid',
             detail: 'scheme field missing',
             fix: 'Add scheme: YourApp to .saneprocess'
+          )
+        end
+      end
+
+      def check_release_config
+        return unless @manifest && @manifest['type'] == 'macos_app'
+
+        release = @manifest['release']
+        unless release.is_a?(Hash)
+          @results[:config] << Result.new(
+            pass: false, label: 'Release config',
+            detail: 'release section missing',
+            fix: 'Add release: { dist_host, r2_bucket, use_sparkle } to .saneprocess'
+          )
+          return
+        end
+
+        missing = %w[dist_host r2_bucket].reject { |key| release[key] && !release[key].to_s.empty? }
+        if missing.empty?
+          @results[:config] << Result.new(pass: true, label: 'Release config')
+        else
+          @results[:config] << Result.new(
+            pass: false, label: 'Release config',
+            detail: "missing: #{missing.join(', ')}",
+            fix: 'Add missing release fields to .saneprocess'
+          )
+        end
+      end
+
+      def check_release_script
+        return unless @manifest && @manifest['type'] == 'macos_app'
+
+        sanemaster_path = File.join(@path, 'scripts', 'SaneMaster.rb')
+        unless File.exist?(sanemaster_path)
+          @results[:config] << Result.new(
+            pass: false, label: 'Release entrypoint',
+            detail: 'scripts/SaneMaster.rb missing',
+            fix: 'Add scripts/SaneMaster.rb wrapper to infra/SaneProcess/scripts/SaneMaster.rb'
+          )
+          return
+        end
+
+        script_path = File.join(@path, 'scripts', 'release.sh')
+        if File.exist?(script_path)
+          @results[:config] << Result.new(
+            pass: false, label: 'Release script unified',
+            detail: 'scripts/release.sh present (deprecated)',
+            fix: 'Remove scripts/release.sh; use ./scripts/SaneMaster.rb release'
+          )
+        else
+          @results[:config] << Result.new(pass: true, label: 'Release script unified')
+        end
+      end
+
+      def check_release_env_absent
+        return unless @manifest && @manifest['type'] == 'macos_app'
+
+        release_env = File.join(@path, 'release.env')
+        if File.exist?(release_env)
+          @results[:config] << Result.new(
+            pass: false, label: 'Release config single source',
+            detail: 'release.env present',
+            fix: 'Remove release.env and use .saneprocess release config'
+          )
+        else
+          @results[:config] << Result.new(pass: true, label: 'Release config single source')
+        end
+      end
+
+      def check_sanemaster_wrapper
+        return unless @manifest && @manifest['type'] == 'macos_app'
+
+        script_path = File.join(@path, 'scripts', 'SaneMaster.rb')
+        alt_path = File.join(@path, 'Scripts', 'SaneMaster.rb')
+        actual_path = if File.exist?(script_path)
+                        script_path
+                      elsif File.exist?(alt_path)
+                        alt_path
+                      end
+
+        unless actual_path
+          @results[:config] << Result.new(
+            pass: false, label: 'SaneMaster unified',
+            detail: 'SaneMaster.rb missing',
+            fix: 'Add wrapper pointing to infra/SaneProcess/scripts/SaneMaster.rb'
+          )
+          return
+        end
+
+        target = File.symlink?(actual_path) ? File.readlink(actual_path) : File.read(actual_path)
+        if target.to_s.include?('infra/SaneProcess/scripts/SaneMaster.rb')
+          @results[:config] << Result.new(pass: true, label: 'SaneMaster unified')
+        else
+          @results[:config] << Result.new(
+            pass: false, label: 'SaneMaster unified',
+            detail: 'not pointing to infra/SaneProcess',
+            fix: 'Replace with wrapper to infra/SaneProcess/scripts/SaneMaster.rb'
           )
         end
       end

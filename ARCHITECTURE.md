@@ -170,6 +170,46 @@ flowchart TD
     CLEAR --> CONTINUE
 ```
 
+### Startup Gate Flow
+
+Blocks substantive work until mandatory startup steps are complete. Initialized in `session_start.rb`, tracked in `sanetrack_gate.rb`, and enforced in `sanetools_startup.rb`.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Closed
+    Closed: open=false
+    Closed --> Closed: StepComplete
+    Closed --> Open: AllStepsDone
+    Open: open=true
+    Open --> Closed: SessionStart (re-init)
+```
+
+Startup steps tracked:
+- `session_docs` (read required docs)
+- `skills_registry` (read `~/.claude/SKILLS_REGISTRY.md`)
+- `validation_report` (run `scripts/validation_report.rb`)
+- `sanemem_check` (curl Sane-Mem health)
+- `orphan_cleanup` (kill orphaned Claude processes)
+- `system_clean` (run `./scripts/SaneMaster.rb clean_system`)
+
+### Deployment Safety Flow
+
+Tracks Sparkle signing and stapler verification to block unsafe deploy actions.
+
+```mermaid
+flowchart TD
+    SIGN[sign_update(.swift) DMG] --> REC_SIGN[Record sparkle_signed_dmgs]
+    STAPLE[xcrun stapler validate/staple] --> REC_STAPLE[Record staple_verified_dmgs]
+
+    REC_SIGN --> READY{Signed?}
+    REC_STAPLE --> READY
+    READY -->|yes| UPLOAD[wrangler r2 object put]
+    READY -->|no| BLOCK_UPLOAD[BLOCK: missing signature/staple]
+
+    APPCAST[Edit appcast.xml] --> CHECK_SIG{edSignature valid?}
+    CHECK_SIG -->|no| BLOCK_APPCAST[BLOCK: empty/placeholder/gh url/length mismatch]
+```
+
 ### Tool Categorization (Blast Radius)
 
 | Category | Examples | Blocked Until |
@@ -229,7 +269,25 @@ flowchart TD
     "reset_at": null
   },
   "sensitive_approvals": {},
+  "startup_gate": {
+    "open": false,
+    "opened_at": null,
+    "steps": {
+      "session_docs": false,
+      "skills_registry": false,
+      "validation_report": false,
+      "sanemem_check": false,
+      "orphan_cleanup": false,
+      "system_clean": false
+    },
+    "step_timestamps": {}
+  },
+  "deployment": {
+    "sparkle_signed_dmgs": [],
+    "staple_verified_dmgs": []
+  },
   "action_log": [],
+  "reminders": {},
   "learnings": [],
   "patterns": {
     "weak_spots": {},

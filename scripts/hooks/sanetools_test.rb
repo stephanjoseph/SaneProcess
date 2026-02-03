@@ -612,7 +612,7 @@ module SaneToolsTest
     exit_code = process_tool_proc.call('Edit', {
       'file_path' => '/Users/sj/SaneApps/apps/SaneBar/docs/appcast.xml',
       'old_string' => 'old content',
-      'new_string' => '<enclosure url="https://dist.sanebar.com/SaneBar-1.0.17.dmg" edSignature="validSig123==" length="12345" />'
+      'new_string' => '<enclosure url="https://dist.sanebar.com/SaneBar-9.9.9-test.dmg" edSignature="validSig123==" length="12345" />'
     })
     $stderr.reopen(original_stderr)
 

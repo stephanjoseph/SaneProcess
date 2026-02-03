@@ -30,7 +30,7 @@ SaneProcess enforces discipline through hooks that block bad behavior before it 
 | **Circuit Breaker** | Auto-stops after 3 same errors |
 | **16 Golden Rules** | Memorable, enforceable discipline |
 | **Sensitive File Protection** | CI/CD, entitlements, build configs require confirmation |
-| **416 Tests** | 175 tier tests + 241 self-tests, including 42 from real Claude failures |
+| **429 Tests** | 175 tier tests + 254 self-tests, including 42 from real Claude failures |
 
 ---
 
@@ -294,7 +294,7 @@ Requires 30+ data points per metric for statistical significance. Run daily.
 
 ## Test Coverage
 
-416 tests across tier tests and self-tests:
+429 tests across tier tests and self-tests:
 
 **Tier Tests (175):**
 
@@ -304,13 +304,13 @@ Requires 30+ data points per metric for statistical significance. Run daily.
 | Hard | 55 | Edge cases |
 | Villain | 59 | Adversarial bypass attempts |
 
-**Self-Tests (241):**
+**Self-Tests (254):**
 
 | Hook | Count | Purpose |
 |------|-------|---------|
 | saneprompt | 176 | Prompt classification |
 | sanetrack | 23 | Failure tracking, doom loops |
-| sanetools | 25 | Research gate, blocking, sensitive files |
+| sanetools | 38 | Research gate, blocking, sensitive files |
 | sanestop | 17 | Session metrics, validation |
 
 Run tests:

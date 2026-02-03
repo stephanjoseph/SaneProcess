@@ -202,7 +202,7 @@ module SaneMasterModules
     end
 
     def scan_swift_packages
-      package_file = '__PROJECT_NAME__.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved'
+      package_file = File.join(project_xcodeproj, 'project.xcworkspace/xcshareddata/swiftpm/Package.resolved')
       package_file = 'Package.resolved' unless File.exist?(package_file)
       return [] unless File.exist?(package_file)
 
@@ -248,7 +248,7 @@ module SaneMasterModules
 
     def scan_frameworks
       frameworks = Set.new
-      Dir.glob('__PROJECT_NAME__/**/*.swift').each do |file|
+      Dir.glob(File.join(project_app_dir, '**/*.swift')).each do |file|
         File.readlines(file).each do |line|
           if line.match(/^import\s+(\w+)/)
             fw = ::Regexp.last_match(1)
@@ -264,7 +264,7 @@ module SaneMasterModules
     def print_ascii_graph(deps)
       puts ''
       puts '┌─────────────────────────────────────────────────────────┐'
-      puts '│                    __PROJECT_NAME__                            │'
+      puts format('│%39s│', project_name.center(39))
       puts '└─────────────────────────────────────────────────────────┘'
       puts '                           │'
 
@@ -326,17 +326,17 @@ module SaneMasterModules
         f.puts '  rankdir=TB;'
         f.puts '  node [shape=box];'
         f.puts ''
-        f.puts '  __PROJECT_NAME__ [style=filled, fillcolor=lightblue];'
+        f.puts "  #{project_name} [style=filled, fillcolor=lightblue];"
         f.puts ''
 
         deps[:swift_packages].each do |pkg|
           f.puts "  \"#{pkg[:name]}\" [label=\"#{pkg[:name]}\\n#{pkg[:version]}\"];"
-          f.puts "  __PROJECT_NAME__ -> \"#{pkg[:name]}\";"
+          f.puts "  #{project_name} -> \"#{pkg[:name]}\";"
         end
 
         deps[:homebrew].each do |tool|
           f.puts "  \"#{tool[:name]}\" [label=\"#{tool[:name]}\\n#{tool[:version]}\", style=filled, fillcolor=lightyellow];"
-          f.puts "  __PROJECT_NAME__ -> \"#{tool[:name]}\" [style=dashed];"
+          f.puts "  #{project_name} -> \"#{tool[:name]}\" [style=dashed];"
         end
 
         f.puts '}'

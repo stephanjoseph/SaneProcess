@@ -1,26 +1,11 @@
 #!/bin/bash
 # frozen_string_literal: false
 #
-# Generic Release Script
-# Creates a signed DMG for distribution
+# Unified Release Script
+# Builds, signs, notarizes, and packages a DMG for any SaneApps project
 #
 
 set -e
-
-# Configuration
-PROJECT_ROOT="$(cd "$(dirname "$0")"/.. && pwd)"
-APP_NAME="$(basename "${PROJECT_ROOT}")"
-# Convert APP_NAME to lowercase for bundle ID (e.g. SaneBar -> sanebar)
-LOWER_APP_NAME="$(echo "${APP_NAME}" | tr '[:upper:]' '[:lower:]')"
-BUNDLE_ID="com.${LOWER_APP_NAME}.app"
-
-TEAM_ID="M78L6FXD48"
-SIGNING_IDENTITY="Developer ID Application: Stephan Joseph (M78L6FXD48)"
-BUILD_DIR="${PROJECT_ROOT}/build"
-ARCHIVE_PATH="${BUILD_DIR}/${APP_NAME}.xcarchive"
-EXPORT_PATH="${BUILD_DIR}/Export"
-DMG_PATH="${BUILD_DIR}/${APP_NAME}.dmg"
-RELEASE_DIR="${PROJECT_ROOT}/releases"
 
 # Colors for output
 RED='\033[0;31m'
@@ -40,11 +25,184 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+print_help() {
+    echo "Usage: $0 [options]"
+    echo ""
+    echo "Options:"
+    echo "  --project PATH      Project root (defaults to current directory)"
+    echo "  --config PATH       Config file (defaults to <project>/.saneprocess if present)"
+    echo "  --full              Version bump, tests, git commit, GitHub release"
+    echo "  --skip-notarize      Skip notarization (for local testing)"
+    echo "  --skip-build         Skip build step (use existing archive)"
+    echo "  --version X.Y.Z      Set version number"
+    echo "  --notes \"...\"      Release notes for GitHub (required with --full)"
+    echo "  -h, --help           Show this help"
+}
+
 ensure_cmd() {
     if ! command -v "$1" >/dev/null 2>&1; then
         log_error "Required command not found: $1"
         exit 1
     fi
+}
+
+ensure_git_clean() {
+    if [ -n "$(git -C "${PROJECT_ROOT}" status --porcelain)" ]; then
+        log_error "Git working directory not clean. Commit or stash changes first."
+        exit 1
+    fi
+}
+
+resolve_path() {
+    local path="$1"
+    if [ -z "${path}" ]; then
+        echo ""
+        return 0
+    fi
+    if [[ "${path}" = /* ]]; then
+        echo "${path}"
+    else
+        echo "${PROJECT_ROOT}/${path}"
+    fi
+}
+
+remove_path() {
+    local path="$1"
+    if [ -e "${path}" ]; then
+        if command -v trash >/dev/null 2>&1; then
+            trash "${path}"
+        else
+            rm -rf "${path}"
+        fi
+    fi
+}
+
+project_version_from_semver() {
+    local semver="$1"
+    local project_version
+    project_version=$(echo "$semver" | tr -d '.' | sed 's/^0*//')
+    if [ -z "${project_version}" ]; then
+        project_version="1"
+    fi
+    echo "${project_version}"
+}
+
+restore_version_bump() {
+    if [ -n "${VERSION_BUMP_RESTORE_CMD}" ]; then
+        eval "${VERSION_BUMP_RESTORE_CMD}"
+        return
+    fi
+
+    if [ -f "${PROJECT_ROOT}/project.yml" ]; then
+        git -C "${PROJECT_ROOT}" restore --staged --worktree "project.yml" 2>/dev/null || \
+            git -C "${PROJECT_ROOT}" checkout -- "project.yml" 2>/dev/null || true
+    fi
+}
+
+bump_project_version() {
+    local version="$1"
+    local project_version
+    project_version=$(project_version_from_semver "${version}")
+
+    if [ -n "${VERSION_BUMP_CMD}" ]; then
+        eval "${VERSION_BUMP_CMD}"
+        return
+    fi
+
+    if [ ! -f "${PROJECT_ROOT}/project.yml" ]; then
+        log_error "No version bump method. Set VERSION_BUMP_CMD or add project.yml."
+        exit 1
+    fi
+
+    sed -i '' "s/MARKETING_VERSION: \".*\"/MARKETING_VERSION: \"${version}\"/" "${PROJECT_ROOT}/project.yml"
+    sed -i '' "s/CURRENT_PROJECT_VERSION: \".*\"/CURRENT_PROJECT_VERSION: \"${project_version}\"/" "${PROJECT_ROOT}/project.yml"
+}
+
+run_tests() {
+    log_info "Running tests..."
+
+    local args=(test -scheme "${SCHEME}" -destination 'platform=macOS' -quiet)
+    if [ -n "${WORKSPACE}" ]; then
+        args=(-workspace "${WORKSPACE}" "${args[@]}")
+    elif [ -n "${XCODEPROJ}" ]; then
+        args=(-project "${XCODEPROJ}" "${args[@]}")
+    fi
+
+    if xcodebuild "${args[@]}" 2>/dev/null; then
+        log_info "All tests passed"
+    else
+        log_error "Tests failed! Aborting release."
+        restore_version_bump
+        exit 1
+    fi
+}
+
+commit_version_bump() {
+    git -C "${PROJECT_ROOT}" add "${VERSION_BUMP_FILES[@]}"
+    if git -C "${PROJECT_ROOT}" commit -m "Bump version to ${VERSION}" >/dev/null 2>&1; then
+        log_info "Version bump committed"
+    else
+        log_warn "No version bump commit created (maybe no changes)"
+    fi
+}
+
+create_github_release() {
+    local repo="${GITHUB_REPO}"
+    if gh release view "v${VERSION}" --repo "${repo}" >/dev/null 2>&1; then
+        log_warn "GitHub release v${VERSION} already exists"
+        return 0
+    fi
+
+    gh release create "v${VERSION}" \
+        --repo "${repo}" \
+        --title "v${VERSION}" \
+        --notes "${RELEASE_NOTES}"
+    log_info "GitHub release created: v${VERSION}"
+}
+
+write_export_options_plist() {
+    local plist_path="$1"
+
+    if [ -n "${EXPORT_OPTIONS_PLIST}" ]; then
+        cp "${EXPORT_OPTIONS_PLIST}" "${plist_path}"
+        return
+    fi
+
+    cat > "${plist_path}" << OPT
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>method</key>
+    <string>developer-id</string>
+    <key>teamID</key>
+    <string>${TEAM_ID}</string>
+    <key>signingStyle</key>
+    <string>manual</string>
+    <key>signingCertificate</key>
+    <string>Developer ID Application</string>
+OPT
+
+    if [ ${#EXPORT_OPTIONS_PROFILES[@]} -gt 0 ]; then
+        echo "    <key>provisioningProfiles</key>" >> "${plist_path}"
+        echo "    <dict>" >> "${plist_path}"
+        for entry in "${EXPORT_OPTIONS_PROFILES[@]}"; do
+            local bundle_id="${entry%%:*}"
+            local profile_name="${entry#*:}"
+            echo "        <key>${bundle_id}</key>" >> "${plist_path}"
+            echo "        <string>${profile_name}</string>" >> "${plist_path}"
+        done
+        echo "    </dict>" >> "${plist_path}"
+    fi
+
+    if [ -n "${EXPORT_OPTIONS_EXTRA_XML}" ]; then
+        echo "${EXPORT_OPTIONS_EXTRA_XML}" >> "${plist_path}"
+    fi
+
+    cat >> "${plist_path}" << OPT
+</dict>
+</plist>
+OPT
 }
 
 create_empty_entitlements_plist() {
@@ -89,7 +247,7 @@ fix_and_verify_zipped_apps_in_app() {
     # Only scan Resources for zips to keep runtime low.
     local resources_path="${host_app_path}/Contents/Resources"
     if [ ! -d "${resources_path}" ]; then
-        rm -rf "${tmp_root}"
+        remove_path "${tmp_root}"
         return 0
     fi
 
@@ -98,7 +256,7 @@ fix_and_verify_zipped_apps_in_app() {
         zip_found=true
 
         local unzip_dir="${tmp_root}/unzip"
-        rm -rf "${unzip_dir}"
+        remove_path "${unzip_dir}"
         mkdir -p "${unzip_dir}"
 
         # If the zip doesn't contain an .app, skip it.
@@ -132,7 +290,7 @@ fix_and_verify_zipped_apps_in_app() {
             if [ -n "${embedded_exec}" ] && [ -f "${embedded_app}/Contents/MacOS/${embedded_exec}" ]; then
                 if binary_has_get_task_allow "${embedded_app}/Contents/MacOS/${embedded_exec}"; then
                     log_error "Embedded helper still has get-task-allow after signing: ${embedded_app}"
-                    rm -rf "${tmp_root}"
+                    remove_path "${tmp_root}"
                     exit 1
                 fi
             fi
@@ -147,7 +305,7 @@ fix_and_verify_zipped_apps_in_app() {
         log_info "Embedded zip helper preflight complete."
     fi
 
-    rm -rf "${tmp_root}"
+    remove_path "${tmp_root}"
 }
 
 sanity_check_app_for_notarization() {
@@ -173,13 +331,28 @@ sanity_check_app_for_notarization() {
     done < <(find "${host_app_path}" -type f -path "*/Contents/MacOS/*" -print0 2>/dev/null || true)
 }
 
-# Parse arguments
+# Defaults/flags
+PROJECT_ROOT=""
+CONFIG_PATH=""
 SKIP_NOTARIZE=false
 SKIP_BUILD=false
+FULL_RELEASE=false
 VERSION=""
+RELEASE_NOTES=""
+XCODEGEN_DONE=false
+RUN_GH_RELEASE=false
 
+# Parse arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
+        --project)
+            PROJECT_ROOT="$2"
+            shift 2
+            ;;
+        --config)
+            CONFIG_PATH="$2"
+            shift 2
+            ;;
         --skip-notarize)
             SKIP_NOTARIZE=true
             shift
@@ -192,14 +365,16 @@ while [[ $# -gt 0 ]]; do
             VERSION="$2"
             shift 2
             ;;
+        --notes)
+            RELEASE_NOTES="$2"
+            shift 2
+            ;;
+        --full)
+            FULL_RELEASE=true
+            shift
+            ;;
         -h|--help)
-            echo "Usage: $0 [options]"
-            echo ""
-            echo "Options:"
-            echo "  --skip-notarize  Skip notarization (for local testing)"
-            echo "  --skip-build     Skip build step (use existing archive)"
-            echo "  --version X.Y.Z  Set version number"
-            echo "  -h, --help       Show this help"
+            print_help
             exit 0
             ;;
         *)
@@ -209,16 +384,142 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Clean up previous builds
-log_info "Cleaning previous build artifacts..."
-rm -rf "${BUILD_DIR}"
+if [ -z "${PROJECT_ROOT}" ]; then
+    PROJECT_ROOT="$(pwd)"
+fi
+PROJECT_ROOT="$(cd "${PROJECT_ROOT}" && pwd)"
+
+if [ -z "${CONFIG_PATH}" ] && [ -f "${PROJECT_ROOT}/.saneprocess" ]; then
+    CONFIG_PATH="${PROJECT_ROOT}/.saneprocess"
+fi
+if [ -z "${CONFIG_PATH}" ] && [ -f "${PROJECT_ROOT}/release.env" ]; then
+    CONFIG_PATH="${PROJECT_ROOT}/release.env"
+fi
+
+if [ -n "${CONFIG_PATH}" ]; then
+    if [ ! -f "${CONFIG_PATH}" ]; then
+        log_error "Config file not found: ${CONFIG_PATH}"
+        exit 1
+    fi
+    if [[ "${CONFIG_PATH}" = *.yml ]] || [[ "${CONFIG_PATH}" = *.yaml ]] || [[ "$(basename "${CONFIG_PATH}")" = ".saneprocess" ]]; then
+        SANEPROCESS_ENV_LOADER="$(cd "$(dirname "$0")" && pwd)/saneprocess_env.rb"
+        if [ ! -f "${SANEPROCESS_ENV_LOADER}" ]; then
+            log_error "Missing saneprocess_env.rb (required to read YAML config)"
+            exit 1
+        fi
+        # shellcheck disable=SC2046
+        eval "$("${SANEPROCESS_ENV_LOADER}" "${CONFIG_PATH}")"
+    else
+        # shellcheck source=/dev/null
+        set -a
+        . "${CONFIG_PATH}"
+        set +a
+    fi
+fi
+
+APP_NAME="${APP_NAME:-$(basename "${PROJECT_ROOT}")}" 
+SCHEME="${SCHEME:-${APP_NAME}}"
+LOWER_APP_NAME="$(echo "${APP_NAME}" | tr '[:upper:]' '[:lower:]')"
+BUNDLE_ID="${BUNDLE_ID:-com.${LOWER_APP_NAME}.app}"
+TEAM_ID="${TEAM_ID:-M78L6FXD48}"
+SIGNING_IDENTITY="${SIGNING_IDENTITY:-Developer ID Application: Stephan Joseph (M78L6FXD48)}"
+BUILD_DIR="${BUILD_DIR:-${PROJECT_ROOT}/build}"
+ARCHIVE_PATH="${ARCHIVE_PATH:-${BUILD_DIR}/${APP_NAME}.xcarchive}"
+EXPORT_PATH="${EXPORT_PATH:-${BUILD_DIR}/Export}"
+RELEASE_DIR="${RELEASE_DIR:-${PROJECT_ROOT}/releases}"
+DIST_HOST="${DIST_HOST:-dist.${LOWER_APP_NAME}.com}"
+SITE_HOST="${SITE_HOST:-${LOWER_APP_NAME}.com}"
+R2_BUCKET="${R2_BUCKET:-${LOWER_APP_NAME}-downloads}"
+USE_SPARKLE="${USE_SPARKLE:-true}"
+MIN_SYSTEM_VERSION="${MIN_SYSTEM_VERSION:-15.0}"
+NOTARY_PROFILE="${NOTARY_PROFILE:-notarytool}"
+GITHUB_REPO="${GITHUB_REPO:-sane-apps/${APP_NAME}}"
+XCODEGEN="${XCODEGEN:-false}"
+DMG_WINDOW_POS="${DMG_WINDOW_POS:-200 120}"
+DMG_WINDOW_SIZE="${DMG_WINDOW_SIZE:-800 400}"
+DMG_ICON_SIZE="${DMG_ICON_SIZE:-100}"
+DMG_APP_ICON_POS="${DMG_APP_ICON_POS:-200 185}"
+DMG_DROP_POS="${DMG_DROP_POS:-600 185}"
+DMG_HIDE_EXTENSION="${DMG_HIDE_EXTENSION:-true}"
+DMG_NO_INTERNET_ENABLE="${DMG_NO_INTERNET_ENABLE:-false}"
+VERIFY_STAPLE="${VERIFY_STAPLE:-false}"
+
+WORKSPACE="${WORKSPACE:-}"
+XCODEPROJ="${XCODEPROJ:-}"
+EXPORT_OPTIONS_PLIST="${EXPORT_OPTIONS_PLIST:-}"
+EXPORT_OPTIONS_EXTRA_XML="${EXPORT_OPTIONS_EXTRA_XML:-}"
+VERSION_BUMP_CMD="${VERSION_BUMP_CMD:-}"
+VERSION_BUMP_RESTORE_CMD="${VERSION_BUMP_RESTORE_CMD:-}"
+
+if ! declare -p EXPORT_OPTIONS_PROFILES >/dev/null 2>&1; then
+    EXPORT_OPTIONS_PROFILES=()
+fi
+if ! declare -p ARCHIVE_EXTRA_ARGS >/dev/null 2>&1; then
+    ARCHIVE_EXTRA_ARGS=()
+fi
+if ! declare -p CREATE_DMG_EXTRA_ARGS >/dev/null 2>&1; then
+    CREATE_DMG_EXTRA_ARGS=()
+fi
+if ! declare -p VERSION_BUMP_FILES >/dev/null 2>&1; then
+    VERSION_BUMP_FILES=("project.yml")
+fi
+
+WORKSPACE="$(resolve_path "${WORKSPACE}")"
+XCODEPROJ="$(resolve_path "${XCODEPROJ}")"
+EXPORT_OPTIONS_PLIST="$(resolve_path "${EXPORT_OPTIONS_PLIST}")"
+DMG_FILE_ICON="$(resolve_path "${DMG_FILE_ICON}")"
+DMG_VOLUME_ICON="$(resolve_path "${DMG_VOLUME_ICON}")"
+DMG_BACKGROUND="$(resolve_path "${DMG_BACKGROUND}")"
+DMG_BACKGROUND_GENERATOR="$(resolve_path "${DMG_BACKGROUND_GENERATOR}")"
+SIGN_UPDATE_SCRIPT="$(resolve_path "${SIGN_UPDATE_SCRIPT:-${PROJECT_ROOT}/scripts/sign_update.swift}")"
+SET_DMG_ICON_SCRIPT="$(resolve_path "${SET_DMG_ICON_SCRIPT:-${PROJECT_ROOT}/scripts/set_dmg_icon.swift}")"
+
+cd "${PROJECT_ROOT}"
+
+# Full release flow
+if [ "${FULL_RELEASE}" = true ]; then
+    if [ -z "${VERSION}" ]; then
+        log_error "--full requires --version X.Y.Z"
+        exit 1
+    fi
+    if [ -z "${RELEASE_NOTES}" ]; then
+        log_error "--full requires --notes \"Release notes\""
+        exit 1
+    fi
+
+    ensure_cmd git
+    ensure_cmd gh
+    ensure_git_clean
+
+    log_info "Bumping version to ${VERSION}..."
+    bump_project_version "${VERSION}"
+
+    if [ "${XCODEGEN}" = true ]; then
+        ensure_cmd xcodegen
+        log_info "Regenerating Xcode project..."
+        xcodegen generate
+        XCODEGEN_DONE=true
+    fi
+
+    run_tests
+    commit_version_bump
+    RUN_GH_RELEASE=true
+fi
+
+# Clean up previous builds (skip if reusing existing archive)
+if [ "${SKIP_BUILD}" = false ]; then
+    log_info "Cleaning previous build artifacts..."
+    remove_path "${BUILD_DIR}"
+fi
 mkdir -p "${BUILD_DIR}"
 mkdir -p "${RELEASE_DIR}"
 
-# Generate project
-log_info "Generating Xcode project..."
-cd "${PROJECT_ROOT}"
-xcodegen generate
+# Generate project if requested
+if [ "${XCODEGEN}" = true ] && [ "${XCODEGEN_DONE}" = false ]; then
+    ensure_cmd xcodegen
+    log_info "Generating Xcode project..."
+    xcodegen generate
+fi
 
 ensure_cmd xcodebuild
 ensure_cmd codesign
@@ -226,14 +527,34 @@ ensure_cmd xcrun
 ensure_cmd hdiutil
 ensure_cmd ditto
 
-verify_archive_bundle_id() {
-    local archive_app_path="${ARCHIVE_PATH}/Products/Applications/${APP_NAME}.app"
+# Build archive
+if [ "${SKIP_BUILD}" = false ]; then
+    log_info "Building release archive..."
+
+    archive_args=(archive -scheme "${SCHEME}" -configuration Release -archivePath "${ARCHIVE_PATH}" -destination "generic/platform=macOS" OTHER_CODE_SIGN_FLAGS="--timestamp")
+    if [ -n "${WORKSPACE}" ]; then
+        archive_args=(-workspace "${WORKSPACE}" "${archive_args[@]}")
+    elif [ -n "${XCODEPROJ}" ]; then
+        archive_args=(-project "${XCODEPROJ}" "${archive_args[@]}")
+    fi
+    if [ ${#ARCHIVE_EXTRA_ARGS[@]} -gt 0 ]; then
+        archive_args+=("${ARCHIVE_EXTRA_ARGS[@]}")
+    fi
+
+    xcodebuild "${archive_args[@]}" 2>&1 | tee "${BUILD_DIR}/build.log"
+
+    if [ ${PIPESTATUS[0]} -ne 0 ]; then
+        log_error "Archive build failed! Check ${BUILD_DIR}/build.log"
+        exit 1
+    fi
+
+    # Verify bundle ID inside archive
+    archive_app_path="${ARCHIVE_PATH}/Products/Applications/${APP_NAME}.app"
     if [ ! -d "${archive_app_path}" ]; then
         log_error "Archive app not found at ${archive_app_path}"
         exit 1
     fi
 
-    local archive_bundle_id
     archive_bundle_id=$(defaults read "${archive_app_path}/Contents/Info" CFBundleIdentifier 2>/dev/null || true)
     if [ -z "${archive_bundle_id}" ]; then
         log_error "Unable to read CFBundleIdentifier from archive app"
@@ -244,54 +565,18 @@ verify_archive_bundle_id() {
         log_error "Bundle ID mismatch: expected ${BUNDLE_ID}, got ${archive_bundle_id}"
         exit 1
     fi
-}
-
-if [ "$SKIP_BUILD" = false ]; then
-    # Build archive
-    # Note: Don't override CODE_SIGN_IDENTITY - let project.yml handle it
-    # to avoid conflicts with SPM packages (they use automatic signing)
-    log_info "Building release archive..."
-    xcodebuild archive \
-        -scheme "${APP_NAME}" \
-        -configuration Release \
-        -archivePath "${ARCHIVE_PATH}" \
-        -destination "generic/platform=macOS" \
-        OTHER_CODE_SIGN_FLAGS="--timestamp" \
-        2>&1 | tee "${BUILD_DIR}/build.log"
-
-    if [ ${PIPESTATUS[0]} -ne 0 ]; then
-        log_error "Archive build failed! Check ${BUILD_DIR}/build.log"
-        exit 1
-    fi
-
-    verify_archive_bundle_id
 fi
 
-# Create export options plist
-log_info "Creating export options..."
-cat > "${BUILD_DIR}/ExportOptions.plist" << OPT
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>method</key>
-    <string>developer-id</string>
-    <key>teamID</key>
-    <string>${TEAM_ID}</string>
-    <key>signingStyle</key>
-    <string>manual</string>
-    <key>signingCertificate</key>
-    <string>Developer ID Application</string>
-</dict>
-</plist>
-OPT
-
 # Export archive
+log_info "Creating export options..."
+EXPORT_OPTIONS_PATH="${BUILD_DIR}/ExportOptions.plist"
+write_export_options_plist "${EXPORT_OPTIONS_PATH}"
+
 log_info "Exporting signed app..."
 xcodebuild -exportArchive \
     -archivePath "${ARCHIVE_PATH}" \
     -exportPath "${EXPORT_PATH}" \
-    -exportOptionsPlist "${BUILD_DIR}/ExportOptions.plist" \
+    -exportOptionsPlist "${EXPORT_OPTIONS_PATH}" \
     2>&1 | tee -a "${BUILD_DIR}/build.log"
 
 if [ ${PIPESTATUS[0]} -ne 0 ]; then
@@ -301,7 +586,7 @@ fi
 
 APP_PATH="${EXPORT_PATH}/${APP_NAME}.app"
 
-# Notarization preflight: fix helper apps embedded inside zip resources, and check entitlements.
+# Notarization preflight
 fix_and_verify_zipped_apps_in_app "${APP_PATH}"
 sanity_check_app_for_notarization "${APP_PATH}"
 
@@ -310,23 +595,25 @@ log_info "Verifying code signature..."
 codesign --verify --deep --strict "${APP_PATH}"
 log_info "Code signature verified!"
 
-# Verify Info.plist has Sparkle keys
-log_info "Verifying Sparkle configuration..."
-PLIST_FEED=$(/usr/libexec/PlistBuddy -c "Print :SUFeedURL" "${APP_PATH}/Contents/Info.plist" 2>/dev/null || echo "")
-PLIST_KEY=$(/usr/libexec/PlistBuddy -c "Print :SUPublicEDKey" "${APP_PATH}/Contents/Info.plist" 2>/dev/null || echo "")
-if [ -z "$PLIST_FEED" ]; then
-    log_error "SUFeedURL missing from Info.plist!"
-    exit 1
+# Verify Sparkle configuration
+if [ "${USE_SPARKLE}" = true ]; then
+    log_info "Verifying Sparkle configuration..."
+    PLIST_FEED=$(/usr/libexec/PlistBuddy -c "Print :SUFeedURL" "${APP_PATH}/Contents/Info.plist" 2>/dev/null || echo "")
+    PLIST_KEY=$(/usr/libexec/PlistBuddy -c "Print :SUPublicEDKey" "${APP_PATH}/Contents/Info.plist" 2>/dev/null || echo "")
+    if [ -z "${PLIST_FEED}" ]; then
+        log_error "SUFeedURL missing from Info.plist!"
+        exit 1
+    fi
+    if [ -z "${PLIST_KEY}" ]; then
+        log_error "SUPublicEDKey missing from Info.plist!"
+        exit 1
+    fi
+    log_info "SUFeedURL: ${PLIST_FEED}"
+    log_info "SUPublicEDKey: ${PLIST_KEY}"
 fi
-if [ -z "$PLIST_KEY" ]; then
-    log_error "SUPublicEDKey missing from Info.plist!"
-    exit 1
-fi
-log_info "SUFeedURL: ${PLIST_FEED}"
-log_info "SUPublicEDKey: ${PLIST_KEY}"
 
 # Get version from app
-if [ -z "$VERSION" ]; then
+if [ -z "${VERSION}" ]; then
     VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "${APP_PATH}/Contents/Info.plist" 2>/dev/null || echo "1.0.0")
 fi
 BUILD_NUMBER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "${APP_PATH}/Contents/Info.plist" 2>/dev/null || echo "1")
@@ -335,91 +622,109 @@ log_info "Version: ${VERSION} (${BUILD_NUMBER})"
 # Create DMG
 DMG_NAME="${APP_NAME}-${VERSION}"
 DMG_PATH="${BUILD_DIR}/${DMG_NAME}.dmg"
-DMG_TEMP="${BUILD_DIR}/dmg_temp"
+
+if [ -n "${DMG_BACKGROUND_GENERATOR}" ] && [ -f "${DMG_BACKGROUND_GENERATOR}" ]; then
+    log_info "Generating DMG background..."
+    swift "${DMG_BACKGROUND_GENERATOR}"
+fi
+
+# Remove old DMG if it exists (create-dmg won't overwrite)
+rm -f "${DMG_PATH}"
 
 log_info "Creating DMG..."
 
-# Check if create-dmg is installed (preferred method)
+if [ -z "${DMG_VOLUME_ICON}" ] && [ -f "${APP_PATH}/Contents/Resources/AppIcon.icns" ]; then
+    DMG_VOLUME_ICON="${APP_PATH}/Contents/Resources/AppIcon.icns"
+fi
+
 if command -v create-dmg >/dev/null 2>&1; then
-    log_info "Using create-dmg for professional installer..."
-
-    # Ensure no old DMG exists (create-dmg fails if exists)
-    rm -f "${DMG_PATH}"
-
+    log_info "Using create-dmg..."
     DMG_ARGS=(
         --volname "${APP_NAME}"
-        --window-pos 200 120
-        --window-size 800 400
-        --icon-size 100
-        --app-drop-link 600 185
-        --icon "${APP_NAME}.app" 200 185
-        --hide-extension "${APP_NAME}.app"
+        --window-pos ${DMG_WINDOW_POS}
+        --window-size ${DMG_WINDOW_SIZE}
+        --icon-size "${DMG_ICON_SIZE}"
+        --icon "${APP_NAME}.app" ${DMG_APP_ICON_POS}
+        --app-drop-link ${DMG_DROP_POS}
     )
 
-    # Add custom volume icon if present
-    if [ -f "${PROJECT_ROOT}/Resources/DMGIcon.icns" ]; then
-        DMG_ARGS+=(--volicon "${PROJECT_ROOT}/Resources/DMGIcon.icns")
+    if [ "${DMG_HIDE_EXTENSION}" = true ]; then
+        DMG_ARGS+=(--hide-extension "${APP_NAME}.app")
+    fi
+
+    if [ -n "${DMG_VOLUME_ICON}" ] && [ -f "${DMG_VOLUME_ICON}" ]; then
+        DMG_ARGS+=(--volicon "${DMG_VOLUME_ICON}")
+    fi
+
+    if [ -n "${DMG_BACKGROUND}" ] && [ -f "${DMG_BACKGROUND}" ]; then
+        DMG_ARGS+=(--background "${DMG_BACKGROUND}")
+    fi
+
+    if [ "${DMG_NO_INTERNET_ENABLE}" = true ]; then
+        DMG_ARGS+=(--no-internet-enable)
+    fi
+
+    if [ ${#CREATE_DMG_EXTRA_ARGS[@]} -gt 0 ]; then
+        DMG_ARGS+=("${CREATE_DMG_EXTRA_ARGS[@]}")
     fi
 
     create-dmg "${DMG_ARGS[@]}" "${DMG_PATH}" "${APP_PATH}"
-
 else
-    log_warn "create-dmg not found, falling back to basic hdiutil..."
-
-    rm -rf "${DMG_TEMP}"
+    log_warn "create-dmg not found, using basic DMG creation..."
+    DMG_TEMP="${BUILD_DIR}/dmg_temp"
+    remove_path "${DMG_TEMP}"
     mkdir -p "${DMG_TEMP}"
-
     cp -R "${APP_PATH}" "${DMG_TEMP}/"
     ln -s /Applications "${DMG_TEMP}/Applications"
-
-    hdiutil create -volname "${APP_NAME}" -srcfolder "${DMG_TEMP}" -ov -format UDZO "${DMG_PATH}"
-
-    rm -rf "${DMG_TEMP}"
+    hdiutil create -volname "${APP_NAME}" \
+        -srcfolder "${DMG_TEMP}" \
+        -ov -format UDZO \
+        "${DMG_PATH}"
+    remove_path "${DMG_TEMP}"
 fi
 
-# Apply Custom Icon to DMG file (for Finder) if hdiutil fallback was used
-if [ ! -x "$(command -v create-dmg)" ] && [ -f "${PROJECT_ROOT}/Resources/DMGIcon.icns" ]; then
-    log_info "Setting custom Finder icon for DMG (Fallback)..."
-    if swift "${PROJECT_ROOT}/scripts/set_dmg_icon.swift" "${PROJECT_ROOT}/Resources/DMGIcon.icns" "${DMG_PATH}"; then
-        log_info "Custom icon applied to file"
+# Set DMG file icon (for Finder)
+if [ -n "${DMG_FILE_ICON}" ]; then
+    if [ -f "${DMG_FILE_ICON}" ] && [ -f "${SET_DMG_ICON_SCRIPT}" ]; then
+        log_info "Setting DMG file icon..."
+        swift "${SET_DMG_ICON_SCRIPT}" "${DMG_FILE_ICON}" "${DMG_PATH}"
     else
-        log_warn "Failed to apply custom icon to file"
+        log_warn "DMG file icon skipped (missing icon or set_dmg_icon.swift)"
     fi
 fi
 
 # Sign DMG
 log_info "Signing DMG..."
 codesign --sign "${SIGNING_IDENTITY}" --timestamp "${DMG_PATH}"
-
-# Verify DMG signature
 codesign --verify "${DMG_PATH}"
 log_info "DMG signature verified!"
 
 # Notarize (if not skipped)
-if [ "$SKIP_NOTARIZE" = false ]; then
+if [ "${SKIP_NOTARIZE}" = false ]; then
     log_info "Submitting for notarization..."
     log_warn "This may take several minutes..."
 
-    # Submit for notarization
     xcrun notarytool submit "${DMG_PATH}" \
-        --keychain-profile "notarytool" \
+        --keychain-profile "${NOTARY_PROFILE}" \
         --wait
 
-    # Staple the notarization ticket
     log_info "Stapling notarization ticket..."
     xcrun stapler staple "${DMG_PATH}"
+
+    if [ "${VERIFY_STAPLE}" = true ]; then
+        log_info "Verifying staple..."
+        xcrun stapler validate "${DMG_PATH}"
+    fi
 
     log_info "Notarization complete!"
 else
     log_warn "Skipping notarization (--skip-notarize flag set)"
 fi
 
-# Copy to releases folder
+# Copy to releases folder (use ditto to preserve custom icon/xattrs)
 FINAL_DMG="${RELEASE_DIR}/${DMG_NAME}.dmg"
-cp "${DMG_PATH}" "${FINAL_DMG}"
-
-# Clean up
-rm -rf "${DMG_TEMP}"
+remove_path "${FINAL_DMG}"
+ditto "${DMG_PATH}" "${FINAL_DMG}"
 
 log_info "========================================"
 log_info "Release build complete!"
@@ -428,23 +733,25 @@ log_info "DMG: ${FINAL_DMG}"
 log_info "Version: ${VERSION}"
 
 # Generate Sparkle Signature
-if command -v swift >/dev/null 2>&1; then
+if [ "${USE_SPARKLE}" = true ] && command -v swift >/dev/null 2>&1; then
     log_info ""
     log_info "--- Generating Release Metadata ---"
-    # Calculate SHA256
     SHA256=$(shasum -a 256 "${FINAL_DMG}" | awk '{print $1}')
     FILE_SIZE=$(stat -f%z "${FINAL_DMG}")
 
-    # Try to fetch Sparkle Private Key
     log_info "Fetching Sparkle Private Key from Keychain..."
     SPARKLE_KEY=$(security find-generic-password -w -s "https://sparkle-project.org" -a "EdDSA Private Key" 2>/dev/null || echo "")
 
-    if [ -n "$SPARKLE_KEY" ]; then
+    if [ -n "${SPARKLE_KEY}" ]; then
         log_info "Sparkle Key found. Generating signature..."
 
-        SIGNATURE=$(swift "${PROJECT_ROOT}/scripts/sign_update.swift" "${FINAL_DMG}" "$SPARKLE_KEY" 2>/dev/null || echo "")
+        if [ -f "${SIGN_UPDATE_SCRIPT}" ]; then
+            SIGNATURE=$(swift "${SIGN_UPDATE_SCRIPT}" "${FINAL_DMG}" "${SPARKLE_KEY}" 2>/dev/null || echo "")
+        else
+            SIGNATURE=""
+        fi
 
-        if [ -n "$SIGNATURE" ]; then
+        if [ -n "${SIGNATURE}" ]; then
             DATE=$(date +"%a, %d %b %Y %H:%M:%S %z")
 
             echo -e "${GREEN}Sparkle AppCast Item:${NC}"
@@ -452,13 +759,13 @@ if command -v swift >/dev/null 2>&1; then
         <item>
             <title>${VERSION}</title>
             <pubDate>${DATE}</pubDate>
-            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:minimumSystemVersion>${MIN_SYSTEM_VERSION}</sparkle:minimumSystemVersion>
             <description>
                 <![CDATA[
                 <p>See CHANGELOG.md for details</p>
                 ]]>
             </description>
-            <enclosure url="https://dist.${LOWER_APP_NAME}.com/updates/${APP_NAME}-${VERSION}.dmg"
+            <enclosure url="https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.dmg"
                        sparkle:version="${BUILD_NUMBER}"
                        sparkle:shortVersionString="${VERSION}"
                        length="${FILE_SIZE}"
@@ -467,7 +774,7 @@ if command -v swift >/dev/null 2>&1; then
         </item>
 EOF
         else
-            log_warn "Failed to generate Sparkle signature. Check Swift and key format."
+            log_error "Failed to generate Sparkle signature. Check Swift and key format."
         fi
     else
         log_warn "Sparkle Private Key not found in Keychain. Skipping signature generation."
@@ -479,7 +786,6 @@ EOF
     echo "SHA256: ${SHA256}"
     echo "Size: ${FILE_SIZE} bytes"
 
-    # Save metadata alongside DMG for verification after R2 upload
     cat > "${BUILD_DIR}/${APP_NAME}-${VERSION}.meta" <<METAEOF
 VERSION=${VERSION}
 BUILD=${BUILD_NUMBER}
@@ -488,14 +794,24 @@ SIZE=${FILE_SIZE}
 SIGNATURE=${SIGNATURE:-UNSIGNED}
 METAEOF
     log_info "Saved release metadata to ${BUILD_DIR}/${APP_NAME}-${VERSION}.meta"
-    log_info "IMPORTANT: After uploading to R2, run post_release.rb to verify and update appcast"
+    log_info "IMPORTANT: After uploading to R2, run any post-release/appcast update script"
+fi
+
+if [ "${RUN_GH_RELEASE}" = true ]; then
+    log_info ""
+    log_info "Creating GitHub release..."
+    create_github_release
 fi
 
 log_info ""
 log_info "To test: open \"${FINAL_DMG}\""
 log_info "To upload to R2:"
-log_info "  npx wrangler r2 object put ${LOWER_APP_NAME}-downloads/updates/${APP_NAME}-${VERSION}.dmg --file=\"${FINAL_DMG}\""
-log_info "Then run: ./scripts/post_release.rb --version ${VERSION}"
+log_info "  npx wrangler r2 object put ${R2_BUCKET}/${APP_NAME}-${VERSION}.dmg --file=\"${FINAL_DMG}\""
 
-# Open the releases folder
+if [ -f "${PROJECT_ROOT}/scripts/post_release.rb" ]; then
+    log_info "Then run: ./scripts/post_release.rb --version ${VERSION}"
+elif [ -f "${PROJECT_ROOT}/scripts/generate_appcast.sh" ]; then
+    log_info "Then run: ./scripts/generate_appcast.sh"
+fi
+
 open "${RELEASE_DIR}"

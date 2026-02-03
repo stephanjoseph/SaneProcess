@@ -148,9 +148,9 @@ ProjectName/
 │   └── keys/                   # Git-ignored!
 │       └── AuthKey_7LMFF3A258.p8
 ├── scripts/
-│   ├── release.sh
-│   ├── full_release.sh
+│   ├── SaneMaster.rb
 │   └── generate_dmg_background.swift
+├── .saneprocess              # Single source of truth (build + release config)
 ├── ProjectName/
 │   ├── Info.plist
 │   ├── ProjectName.entitlements
@@ -382,132 +382,44 @@ codesign -d --entitlements :- "path/to/App.app" 2>&1 | grep -E "get-task-allow|d
 | Invalid signature | Remove and re-sign the entire .app |
 | Binary not signed | Check all binaries in Contents/MacOS/ |
 
-### 4.2 release.sh (Core)
+### 4.2 SaneMaster Release (Unified)
 
+We use a **single, shared release entrypoint** via SaneMaster, which delegates to SaneProcess `release.sh`. Each project provides release config inside `.saneprocess`.
+
+**Per-project config (`.saneprocess` excerpt):**
 ```bash
-#!/bin/bash
-set -e
+name: ProjectName
+type: macos_app
+scheme: ProjectName
+project: ProjectName.xcodeproj
+bundle_id: com.projectname.app
 
-APP_NAME="ProjectName"
-BUNDLE_ID="com.projectname.app"
-TEAM_ID="M78L6FXD48"
-SIGNING_IDENTITY="Developer ID Application: Stephan Joseph (M78L6FXD48)"
+build:
+  xcodegen: true
 
-# Build
-xcodebuild archive \
-  -project "${APP_NAME}.xcodeproj" \
-  -scheme "${APP_NAME}" \
-  -archivePath "build/${APP_NAME}.xcarchive" \
-  -configuration Release \
-  CODE_SIGN_IDENTITY="${SIGNING_IDENTITY}" \
-  DEVELOPMENT_TEAM="${TEAM_ID}"
-
-# Export
-xcodebuild -exportArchive \
-  -archivePath "build/${APP_NAME}.xcarchive" \
-  -exportPath "build/export" \
-  -exportOptionsPlist ExportOptions.plist
-
-# Create DMG
-hdiutil create -volname "${APP_NAME}" \
-  -srcfolder "build/export/${APP_NAME}.app" \
-  -ov -format UDZO \
-  "releases/${APP_NAME}-${VERSION}.dmg"
-
-# Sign DMG
-codesign --force --sign "${SIGNING_IDENTITY}" \
-  --options runtime \
-  "releases/${APP_NAME}-${VERSION}.dmg"
-
-# Notarize
-xcrun notarytool submit "releases/${APP_NAME}-${VERSION}.dmg" \
-  --keychain-profile "notarytool" \
-  --wait
-
-# Staple
-xcrun stapler staple "releases/${APP_NAME}-${VERSION}.dmg"
-
-# Output SHA256 for verification
-SHA256=$(shasum -a 256 "releases/${APP_NAME}-${VERSION}.dmg" | awk '{print $1}')
-echo "SHA256: ${SHA256}"
-echo "Upload releases/${APP_NAME}-${VERSION}.dmg to Lemon Squeezy"
+release:
+  dist_host: dist.projectname.com
+  site_host: projectname.com
+  r2_bucket: sanebar-downloads
+  use_sparkle: true
+  dmg:
+    file_icon: Resources/DMGIcon.icns
 ```
 
-### 4.3 full_release.sh (Comprehensive)
+Run:
+```bash
+./scripts/SaneMaster.rb release
+```
 
-This script handles the complete release cycle including version bumps and appcast generation:
+### 4.3 Full Release (Unified)
+
+Use the same script with `--full` for version bump + tests + GitHub release (metadata only):
 
 ```bash
-#!/bin/bash
-set -e
-
-# Configuration
-APP_NAME="ProjectName"
-BUNDLE_ID="com.projectname.app"
-TEAM_ID="M78L6FXD48"
-SIGNING_IDENTITY="Developer ID Application: Stephan Joseph (M78L6FXD48)"
-SPARKLE_KEY_ACCOUNT="EdDSA Private Key"  # Shared across all SaneApps — DO NOT create per-project keys
-DMG_HOSTING_URL="https://projectname.com/downloads"  # Where paid DMGs are served
-
-# Parse arguments
-BUMP_TYPE="${1:-patch}"  # major, minor, patch
-
-# Get current version from project.yml
-CURRENT_VERSION=$(grep "MARKETING_VERSION" Config/Shared.xcconfig | cut -d'=' -f2 | tr -d ' ')
-IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
-
-# Bump version
-case "$BUMP_TYPE" in
-    major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
-    minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
-    patch) PATCH=$((PATCH + 1)) ;;
-esac
-NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
-
-echo "Releasing ${APP_NAME} v${NEW_VERSION}"
-
-# Update version in xcconfig
-sed -i '' "s/MARKETING_VERSION = .*/MARKETING_VERSION = ${NEW_VERSION}/" Config/Shared.xcconfig
-
-# Build, sign, notarize (as in release.sh above)
-# ... [same as release.sh] ...
-
-# Generate appcast entry
-DMG_SIZE=$(stat -f%z "releases/${APP_NAME}-${NEW_VERSION}.dmg")
-DMG_DATE=$(date -R)
-
-# Sign with Sparkle EdDSA key
-SIGNATURE=$(./bin/sign_update "releases/${APP_NAME}-${NEW_VERSION}.dmg" 2>&1 | grep "sparkle:edSignature" | cut -d'"' -f2)
-
-# Append to appcast.xml (URL points to your download server, not GitHub)
-cat >> docs/appcast.xml << EOF
-    <item>
-      <title>${NEW_VERSION}</title>
-      <pubDate>${DMG_DATE}</pubDate>
-      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-      <enclosure
-        url="${DMG_HOSTING_URL}/${APP_NAME}-${NEW_VERSION}.dmg"
-        sparkle:version="${NEW_VERSION}"
-        sparkle:shortVersionString="${NEW_VERSION}"
-        length="${DMG_SIZE}"
-        type="application/x-apple-diskimage"
-        sparkle:edSignature="${SIGNATURE}"/>
-    </item>
-EOF
-
-# Git commit and push (source code only, no DMG)
-git add -A
-git commit -m "Release v${NEW_VERSION}"
-git tag "v${NEW_VERSION}"
-git push origin main --tags
-
-# Manual step: Upload DMG to Lemon Squeezy or your download server
-echo ""
-echo "=== MANUAL STEPS ==="
-echo "1. Upload releases/${APP_NAME}-${NEW_VERSION}.dmg to Lemon Squeezy"
-echo "2. Update download link on website"
-echo "3. Verify appcast.xml URL resolves correctly"
+./scripts/SaneMaster.rb release --full --version X.Y.Z --notes "Release notes"
 ```
+
+**DMGs are always hosted on Cloudflare R2 + `dist.*`**. GitHub Releases are metadata only.
 
 ### 4.4 DMG Background Generator
 
@@ -676,7 +588,7 @@ Brief description
 - Change 2
 
 ## Testing
-- [ ] Ran ./scripts/release.sh --skip-notarize
+- [ ] Ran ./scripts/SaneMaster.rb release --skip-notarize
 - [ ] Tested on macOS
 - [ ] No regressions
 
@@ -846,7 +758,7 @@ ps aux | grep claude | grep -v grep  # Check for stale processes
 ### Phase 2: Project Setup
 3. Create repo and clone
 4. Copy `.claude/`, `.mcp.json`, `CLAUDE.md` from template
-5. Copy `scripts/release.sh` from SaneBar
+5. Add `scripts/SaneMaster.rb` wrapper pointing to `infra/SaneProcess/scripts/SaneMaster.rb`
 6. Copy `fastlane/` folder, update bundle ID
 
 ### Phase 3: Build & Test
@@ -862,7 +774,7 @@ ps aux | grep claude | grep -v grep  # Check for stale processes
 14. Add alias to `~/.zshrc`
 
 ### Phase 5: Release
-14. First release: `./scripts/release.sh`
+14. First release: `./scripts/SaneMaster.rb release`
 15. Upload DMG to Lemon Squeezy
 16. Kill caffeinate when done
 

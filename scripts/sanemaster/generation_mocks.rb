@@ -42,7 +42,7 @@ module SaneMasterModules
       end
 
       puts '📂 Scanning for @mockable protocols...'
-      # Search in both root and __PROJECT_NAME__/ subdirectory for different project structures
+      # Search in both root and project subdirectory for different project structures
       protocol_files = `find . -name "*.swift" -not -path "./Tests/*" -not -path "./.build/*" -exec grep -l "@mockable" {} \\; 2>/dev/null`.strip.split("\n")
 
       if protocol_files.empty?
@@ -53,7 +53,7 @@ module SaneMasterModules
       puts "   Found #{protocol_files.length} protocol(s) with @mockable"
       puts ''
 
-      mocks_file = '__PROJECT_NAME__Tests/Mocks/Mocks.swift'
+      mocks_file = File.join(project_tests_dir, 'Mocks', 'Mocks.swift')
       unless File.exist?(mocks_file)
         puts "❌ Mocks file not found: #{mocks_file}"
         puts '   Run: ./Scripts/SaneMaster.rb gen_mock --target Core/Protocols'
@@ -92,7 +92,7 @@ module SaneMasterModules
       puts 'Options:'
       puts '  --target <dir>        Generate mocks for all protocols in directory'
       puts '  --protocol <name>     Generate mock for specific protocol'
-      puts '  --output <dir>        Output directory (default: __PROJECT_NAME__Tests/Mocks)'
+      puts "  --output <dir>        Output directory (default: #{project_tests_dir}/Mocks)"
       puts ''
       puts 'Examples:'
       puts '  ./Scripts/SaneMaster.rb gen_mock --target Services/Camera'
@@ -102,8 +102,9 @@ module SaneMasterModules
     def parse_mock_options(args)
       target = nil
       protocol = nil
-      # Use Tests/Mocks or __PROJECT_NAME__Tests/Mocks depending on project structure
-      output_dir = File.directory?('Tests') ? 'Tests/Mocks' : '__PROJECT_NAME__Tests/Mocks'
+      # Use Tests/Mocks or <Project>Tests/Mocks depending on project structure
+      tests_root = File.directory?('Tests') ? 'Tests' : project_tests_dir
+      output_dir = File.join(tests_root, 'Mocks')
 
       args.each_with_index do |arg, i|
         case arg
@@ -118,14 +119,14 @@ module SaneMasterModules
 
     def generate_mocks_for_target(target, output_file, output_dir)
       puts "Generating mocks for target: #{target}"
-      # Try target directly first, then with __PROJECT_NAME__/ prefix (for different project structures)
+      # Try target directly first, then with project subdirectory prefix (for different project structures)
       source_dir = if File.directory?(target)
                      target
-                   elsif File.directory?("__PROJECT_NAME__/#{target}")
-                     "__PROJECT_NAME__/#{target}"
+                   elsif File.directory?("#{project_app_dir}/#{target}")
+                     "#{project_app_dir}/#{target}"
                    end
       unless source_dir
-        puts "❌ Directory not found: #{target} or __PROJECT_NAME__/#{target}"
+        puts "❌ Directory not found: #{target} or #{project_app_dir}/#{target}"
         return
       end
 
@@ -168,7 +169,8 @@ module SaneMasterModules
 
       content = File.read(output_file)
       content.gsub!(/^import [A-Za-z]+ [A-Za-z]+.*\n/, '')
-      content.gsub!(/(import Foundation\n)/, "\\1@testable import __PROJECT_NAME__\n") unless content.include?('@testable import __PROJECT_NAME__')
+      import_line = "@testable import #{project_name}\n"
+      content.gsub!(/(import Foundation\n)/, "\\1#{import_line}") unless content.include?(import_line.strip)
       File.write(output_file, content)
     end
 
@@ -185,8 +187,8 @@ module SaneMasterModules
       temp_dir = Dir.mktmpdir
       temp_mocks = File.join(temp_dir, 'Mocks.swift')
 
-      # Use Core/Services or __PROJECT_NAME__/Core/Protocols depending on project structure
-      protocols_dir = File.directory?('Core/Services') ? 'Core/Services' : '__PROJECT_NAME__/Core/Protocols'
+      # Use Core/Services or <Project>/Core/Protocols depending on project structure
+      protocols_dir = File.directory?('Core/Services') ? 'Core/Services' : File.join(project_app_dir, 'Core', 'Protocols')
       cmd = "mockolo -s #{protocols_dir} -d #{temp_mocks} --enable-args-history --mock-all 2>/dev/null"
       unless system(cmd)
         puts '❌ Failed to generate temporary mocks'

@@ -13,7 +13,6 @@
 #
 # Exit codes:
 # - 0: Always (bootstrap should never fail)
-
 require 'json'
 require 'fileutils'
 require 'time'
@@ -32,7 +31,6 @@ SANELOOP_STATE_FILE = File.join(CLAUDE_DIR, 'saneloop-state.json')
 SANELOOP_ARCHIVE_DIR = File.join(CLAUDE_DIR, 'saneloop-archive')
 EDIT_STATE_FILE = File.join(CLAUDE_DIR, 'edit_state.json')
 SUMMARY_VALIDATED_FILE = File.join(CLAUDE_DIR, 'summary_validated.json')
-
 def ensure_claude_dir
   FileUtils.mkdir_p(CLAUDE_DIR)
 
@@ -51,7 +49,6 @@ def ensure_claude_dir
     GITIGNORE
   end
 end
-
 def reset_session_state
   # VULN-007 FIX: Do NOT auto-reset tripped breaker
   # A tripped breaker indicates repeated failures that need human review

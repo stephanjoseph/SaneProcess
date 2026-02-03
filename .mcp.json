@@ -26,6 +26,28 @@
       "args": [
         "/Users/sj/.npm-global/lib/node_modules/@steipete/macos-automator-mcp/dist/server.js"
       ]
+    },
+    "serena": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/oraios/serena",
+        "serena",
+        "start-mcp-server",
+        "--context",
+        "claude-code",
+        "--project-from-cwd"
+      ],
+      "env": {
+        "ENABLE_TOOL_SEARCH": "true"
+      }
+    },
+    "mcp-search": {
+      "type": "stdio",
+      "command": "/Users/sj/.claude/plugins/cache/thedotmack/claude-mem/9.0.6/scripts/mcp-server.cjs"
+    },
+    "openaiDeveloperDocs": {
+      "url": "https://developers.openai.com/mcp"
     }
   }
 }

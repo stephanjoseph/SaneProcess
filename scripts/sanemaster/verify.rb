@@ -68,7 +68,7 @@ module SaneMasterModules
       if nuclear
         puts '⚠️  NUCLEAR CLEAN - Removing all build artifacts...'
         # DerivedData
-        system('rm -rf ~/Library/Developer/Xcode/DerivedData/__PROJECT_NAME__-*')
+        system("rm -rf ~/Library/Developer/Xcode/DerivedData/#{project_name}-*")
         system('rm -rf .derivedData')
         # Asset catalog caches (critical for icon changes!)
         system('rm -rf ~/Library/Caches/com.apple.dt.Xcode/')
@@ -76,13 +76,13 @@ module SaneMasterModules
         system('rm -rf ~/Library/Developer/Xcode/DerivedData/ModuleCache.noindex')
         # Test output
         system('rm -rf fastlane/test_output')
-        system('rm -rf /tmp/__PROJECT_NAME__*')
+        system("rm -rf /tmp/#{project_name}*")
         # CRITICAL: Also clear Ruby's actual tmpdir (which differs from /tmp on macOS)
         # Dir.tmpdir returns /var/folders/.../T/ not /tmp
-        diagnostics_dir = File.join(Dir.tmpdir, '__PROJECT_NAME___Diagnostics')
+        diagnostics_dir = File.join(Dir.tmpdir, "#{project_name}_Diagnostics")
         FileUtils.rm_rf(diagnostics_dir)
         # Clear any test project leftovers (non-sandboxed app uses Application Support)
-        system('rm -rf ~/Library/Application\\ Support/__PROJECT_NAME__/__PROJECT_NAME___Test_Projects 2>/dev/null')
+        system("rm -rf ~/Library/Application\\ Support/#{project_name}/#{project_name}_Test_Projects 2>/dev/null")
         system('rm -f test_output.txt')
         # Regenerate project after nuclear clean
         puts '🔄 Regenerating Xcode project...'
@@ -90,7 +90,7 @@ module SaneMasterModules
         puts '✅ Nuclear clean complete.'
       else
         puts 'Standard clean...'
-        system('xcodebuild clean -scheme __PROJECT_NAME__ 2>&1 > /dev/null')
+        system('xcodebuild', *xcodebuild_container_args, '-scheme', project_scheme, 'clean', out: File::NULL, err: File::NULL)
         system('rm -f test_output.txt')
         puts '✅ Clean complete.'
       end
@@ -102,7 +102,7 @@ module SaneMasterModules
 
       %w[Camera Microphone ScreenRecording].each do |service|
         print "  Resetting #{service}... "
-        system("tccutil reset #{service} #{@bundle_id} 2>&1 > /dev/null")
+        system('tccutil', 'reset', service, @bundle_id, out: File::NULL, err: File::NULL)
         puts '✅'
       end
 
@@ -160,6 +160,11 @@ module SaneMasterModules
       puts '🔍 --- [ VALIDATE TEST REFERENCES ] ---'
       puts 'Checking that all test references match UI code...'
 
+      unless ui_tests_present?
+        puts "  ⚠️  No UI tests found (#{project_ui_tests_dir} missing). Skipping validation."
+        return
+      end
+
       ui_identifiers = extract_ui_identifiers
       puts "  Found #{ui_identifiers.count} identifiers in UI code"
 
@@ -191,7 +196,7 @@ module SaneMasterModules
 
       content = File.read(project_yml)
       content.include?('# Temporarily disabled test targets') ||
-        (content.include?('# targets:') && content.include?('#   - __PROJECT_NAME__Tests'))
+        (content.include?('# targets:') && content.include?("#   - #{project_tests_dir}"))
     end
 
     def handle_disabled_tests(args)
@@ -203,8 +208,9 @@ module SaneMasterModules
 
       clean([]) if args.include?('--clean')
 
-      puts '🔨 Building __PROJECT_NAME__ app...'
-      result = system("xcodebuild -project __PROJECT_NAME__.xcodeproj -scheme __PROJECT_NAME__ -destination 'platform=macOS,arch=arm64' build")
+      puts "🔨 Building #{project_name} app..."
+      result = system('xcodebuild', *xcodebuild_container_args, '-scheme', project_scheme,
+                      '-destination', 'platform=macOS,arch=arm64', 'build')
       puts ''
       if result
         puts '✅ Build succeeded (tests disabled)'
@@ -218,13 +224,13 @@ module SaneMasterModules
       print '🔐 Granting test permissions... '
       # Use dynamic bundle_id instead of hardcoded value
       %w[Camera Microphone ScreenRecording].each do |service|
-        system("tccutil reset #{service} #{@bundle_id} 2>/dev/null")
+        system('tccutil', 'reset', service, @bundle_id, err: File::NULL)
       end
 
       permission_pid = nil
       script_path = File.join(__dir__, '..', 'grant_permissions.applescript')
       if File.exist?(script_path)
-        permission_pid = Process.spawn("osascript '#{script_path}' __PROJECT_NAME__ > /dev/null 2>&1")
+        permission_pid = Process.spawn("osascript '#{script_path}' #{project_name} > /dev/null 2>&1")
         Process.detach(permission_pid)
       end
 
@@ -243,14 +249,14 @@ module SaneMasterModules
         end
       end
 
-      system("pkill -f 'grant_permissions.applescript' 2>/dev/null")
-      system("pkill -f 'xcodebuild test' 2>/dev/null")
-      system("pkill -f '__PROJECT_NAME__.*test' 2>/dev/null")
+      system('pkill', '-f', 'grant_permissions.applescript', err: File::NULL)
+      system('pkill', '-f', 'xcodebuild test', err: File::NULL)
+      system('pkill', '-f', "#{project_name}.*test", err: File::NULL)
       # Use -x for exact match to avoid killing xcodebuildmcp MCP server
-      system('pkill -9 -x xcodebuild 2>/dev/null')
+      system('pkill', '-9', '-x', 'xcodebuild', err: File::NULL)
       sleep(0.5)
-      system('killall -9 xcodebuild 2>/dev/null')
-      system('killall -9 __PROJECT_NAME__ 2>/dev/null')
+      system('killall', '-9', 'xcodebuild', err: File::NULL)
+      system('killall', '-9', project_name, err: File::NULL)
 
       puts '✅'
     end
@@ -276,10 +282,33 @@ module SaneMasterModules
     def build_test_command(include_ui)
       if include_ui
         # UI tests not yet implemented - warn and run unit tests only
-        puts '  ⚠️  UI tests not available (__PROJECT_NAME__UITests directory does not exist)'
+        puts "  ⚠️  UI tests not available (#{project_ui_tests_dir} directory does not exist)"
         puts '  📦 Running unit tests only...'
       end
-      "xcodebuild test -scheme __PROJECT_NAME__ -destination 'platform=macOS,arch=arm64' -only-testing:__PROJECT_NAME__Tests 2>&1"
+      args = ['xcodebuild', 'test']
+      args.concat(xcodebuild_container_args)
+      args.concat(['-scheme', project_scheme, '-destination', 'platform=macOS,arch=arm64'])
+      return args if use_test_plan?
+      if include_ui
+        if ui_tests_present?
+          args.concat(["-only-testing:#{project_test_target}", "-only-testing:#{project_ui_test_target}"])
+        else
+          # UI tests not yet implemented - warn and run unit tests only
+          puts "  ⚠️  UI tests not available (#{project_ui_tests_dir} directory does not exist)"
+          puts '  📦 Running unit tests only...'
+          args << "-only-testing:#{project_test_target}"
+        end
+      else
+        args << "-only-testing:#{project_test_target}"
+      end
+      args
+    end
+
+    def use_test_plan?
+      value = saneprocess_value('tests', 'use_test_plan')
+      return false if value.nil?
+
+      value == true || value.to_s.downcase == 'true'
     end
 
     def execute_with_logging(cmd, timeout_seconds)
@@ -291,7 +320,7 @@ module SaneMasterModules
           puts '   📝 Full logs: test_output.txt'
 
           Timeout.timeout(timeout_seconds) do
-            Open3.popen2e(cmd) do |stdin, stdout_err, wait_thr|
+            Open3.popen2e(*cmd) do |stdin, stdout_err, wait_thr|
               stdin.close
               stdout_err.each_line do |line|
                 line = line.chomp
@@ -356,11 +385,11 @@ module SaneMasterModules
 
       3.times do |attempt|
         # Use -x for exact match to avoid killing xcodebuildmcp MCP server
-        system("pkill -9 -f 'xcodebuild test' 2>/dev/null")
-        system('pkill -9 -x xcodebuild 2>/dev/null')
-        system('killall -9 xcodebuild 2>/dev/null')
-        system('killall -9 __PROJECT_NAME__ 2>/dev/null')
-        system('pkill -9 -x xctest 2>/dev/null')
+        system('pkill', '-9', '-f', 'xcodebuild test', err: File::NULL)
+        system('pkill', '-9', '-x', 'xcodebuild', err: File::NULL)
+        system('killall', '-9', 'xcodebuild', err: File::NULL)
+        system('killall', '-9', project_name, err: File::NULL)
+        system('pkill', '-9', '-x', 'xctest', err: File::NULL)
         sleep(0.5) if attempt < 2
       end
 
@@ -395,7 +424,7 @@ module SaneMasterModules
 
     def check_xcodegen_sync
       puts "\n📁 XcodeGen Sync:"
-      project_path = '__PROJECT_NAME__.xcodeproj/project.pbxproj'
+      project_path = File.join(project_xcodeproj, 'project.pbxproj')
       unless File.exist?(project_path)
         puts '  ❌ Project file missing. Run: xcodegen generate'
         return
@@ -404,7 +433,7 @@ module SaneMasterModules
       puts '  ✅ Project file exists'
       begin
         require 'xcodeproj'
-        project = Xcodeproj::Project.open('__PROJECT_NAME__.xcodeproj')
+        project = Xcodeproj::Project.open(project_xcodeproj)
         project_swift_count = project.files.count { |f| f.path&.end_with?('.swift') }
         disk_swift_count = `find . -name "*.swift" -not -path "*/.*" -not -path "*/build/*" -not -path "*/vendor/*" | wc -l`.strip.to_i
         if (project_swift_count - disk_swift_count).abs > 15
@@ -478,7 +507,7 @@ module SaneMasterModules
 
     def check_derived_data
       puts "\n📁 DerivedData:"
-      dd_path = File.expand_path('~/Library/Developer/Xcode/DerivedData/__PROJECT_NAME__-*')
+      dd_path = File.expand_path("~/Library/Developer/Xcode/DerivedData/#{project_name}-*")
       dd_dirs = Dir.glob(dd_path)
       if dd_dirs.any?
         total_size = dd_dirs.map { |d| `du -sh "#{d}" 2>/dev/null`.split.first }.join(', ')
@@ -516,13 +545,13 @@ module SaneMasterModules
     def extract_ui_identifiers
       identifiers = Set.new
 
-      identifiers_file = '__PROJECT_NAME__/Core/Testing/AccessibilityIdentifiers.swift'
+      identifiers_file = File.join(project_app_dir, 'Core/Testing/AccessibilityIdentifiers.swift')
       if File.exist?(identifiers_file)
         content = File.read(identifiers_file)
         content.scan(/static let \w+ = ["']([^"']+)["']/) { |match| identifiers << match[0] }
       end
 
-      Dir.glob('__PROJECT_NAME__/**/*.swift').each do |file|
+      Dir.glob(File.join(project_app_dir, '**/*.swift')).each do |file|
         next if file.include?('/Tests/') || file.include?('/Mocks/') || file.include?('AccessibilityIdentifiers.swift')
         next unless File.exist?(file)
 
@@ -535,14 +564,35 @@ module SaneMasterModules
     end
 
     def extract_test_references
-      # UI tests not yet implemented - return empty set
-      # When __PROJECT_NAME__UITests is created, this will scan for accessibility identifier references
-      Set.new.to_a
+      return Set.new.to_a unless ui_tests_present?
+
+      identifiers = Set.new
+      Dir.glob(File.join(project_ui_tests_dir, '**/*.swift')).each do |file|
+        next unless File.exist?(file)
+
+        content = File.read(file)
+        content.scan(/accessibilityIdentifier\(["']([^"']+)["']\)/) { |match| identifiers << match[0] }
+        content.scan(/\bapp\.\w+(?:\.\w+)*\s*\[\s*["']([^"']+)["']\s*\]/) { |match| identifiers << match[0] }
+      end
+
+      identifiers.to_a
     end
 
-    def find_references_in_files(_identifier)
-      # UI tests not yet implemented - return empty array
-      []
+    def find_references_in_files(identifier)
+      return [] unless ui_tests_present?
+
+      files = []
+      Dir.glob(File.join(project_ui_tests_dir, '**/*.swift')).each do |file|
+        next unless File.exist?(file)
+        next unless File.read(file).include?(identifier)
+
+        files << file
+      end
+      files
+    end
+
+    def ui_tests_present?
+      Dir.exist?(project_ui_tests_dir)
     end
 
     # ═══════════════════════════════════════════════════════════════════════════

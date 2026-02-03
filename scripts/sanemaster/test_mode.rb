@@ -39,8 +39,7 @@ module SaneMasterModules
           puts '   --force flag set, launching anyway...'
         else
           puts '   Rebuilding to ensure fresh binary...'
-          build_success = system("xcodebuild -scheme #{project_name} -destination \"platform=macOS\" build 2>&1 | grep -E \"(BUILD|error:)\" | tail -3")
-          unless build_success
+          unless run_build_command
             puts '   ❌ Rebuild failed!'
             return
           end
@@ -58,10 +57,10 @@ module SaneMasterModules
 
       if capture_logs
         puts '📝 Capturing logs to stdout...'
-        pid = spawn(env_vars, "#{app_path}/Contents/MacOS/#{project_name}")
+        pid = spawn(env_vars, File.join(app_path, 'Contents', 'MacOS', project_name))
         Process.wait(pid)
       else
-        system(env_vars, "open '#{app_path}'")
+        system(env_vars, 'open', app_path)
         puts '✅ App launched (fresh build verified)'
       end
     end
@@ -73,12 +72,12 @@ module SaneMasterModules
       lsregister = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister'
       if File.exist?(lsregister)
         print '  Resetting Launch Services database... '
-        system("#{lsregister} -kill -r -domain local -domain system -domain user")
+      system(lsregister, '-kill', '-r', '-domain', 'local', '-domain', 'system', '-domain', 'user')
         puts '✅'
       end
 
       print '  Restarting Dock... '
-      system('killall Dock')
+      system('killall', 'Dock')
       puts '✅'
 
       clean(['--nuclear'])
@@ -161,7 +160,7 @@ module SaneMasterModules
 
     def kill_existing_processes
       puts "1️⃣  Killing existing #{project_name} processes..."
-      system("killall -9 #{project_name} 2>/dev/null")
+      system('killall', '-9', project_name, err: File::NULL)
       puts '   ✅ Done'
       puts ''
     end
@@ -227,8 +226,7 @@ module SaneMasterModules
 
     def build_app # rubocop:disable Naming/PredicateMethod -- performs action, not just a query
       puts '4️⃣  Building app...'
-      build_success = system("xcodebuild -scheme #{project_name} -destination \"platform=macOS\" build 2>&1 | grep -E \"(BUILD|error:)\" | tail -5")
-      unless build_success
+      unless run_build_command(summary_lines: 5)
         puts '   ❌ Build failed! Fix errors before continuing.'
         return false
       end
@@ -260,6 +258,18 @@ module SaneMasterModules
       puts ''
       puts "🕐 Session started: #{Time.now.strftime('%Y-%m-%d %H:%M:%S')}"
       puts ''
+    end
+
+    def run_build_command(summary_lines: 3)
+      require 'open3'
+
+      cmd = ['xcodebuild', *xcodebuild_container_args, '-scheme', project_scheme, '-destination', 'platform=macOS', 'build']
+      stdout, status = Open3.capture2e(*cmd)
+
+      summary = stdout.lines.select { |line| line.match?(/BUILD|error:/) }.last(summary_lines)
+      summary.each { |line| puts "   #{line.rstrip}" } if summary.any?
+
+      status.success?
     end
   end
 end

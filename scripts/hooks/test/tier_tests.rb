@@ -9,9 +9,14 @@
 require 'json'
 require 'open3'
 require 'fileutils'
+require 'time'
 
 HOOKS_DIR = File.expand_path('..', __dir__)
 PROJECT_DIR = File.expand_path('../..', HOOKS_DIR)
+TEST_HOOK_SECRET = ENV['CLAUDE_HOOK_SECRET'] || 'tier-tests-secret'
+ENV['CLAUDE_HOOK_SECRET'] = TEST_HOOK_SECRET
+
+require_relative '../core/state_manager'
 
 # === TEST FRAMEWORK ===
 
@@ -39,7 +44,8 @@ class TierTest
     hook_path = File.join(HOOKS_DIR, "#{@hook_name}.rb")
     env_with_defaults = {
       'CLAUDE_PROJECT_DIR' => PROJECT_DIR,
-      'TIER_TEST_MODE' => 'true'  # Hooks can detect test mode
+      'TIER_TEST_MODE' => 'true', # Hooks can detect test mode
+      'CLAUDE_HOOK_SECRET' => TEST_HOOK_SECRET
     }.merge(env)
 
     stdout, stderr, status = Open3.capture3(
@@ -149,6 +155,34 @@ class TierTest
         villain: "#{villain}/#{villain_total}#{villain_weak > 0 ? " (#{villain_weak}w)" : ''}"
       }
     }
+  end
+end
+
+# === TEST HELPERS ===
+
+def open_startup_gate
+  StateManager.update(:startup_gate) do |g|
+    g[:open] = true
+    g[:opened_at] = Time.now.iso8601
+    g[:steps] = {
+      session_docs: true,
+      skills_registry: true,
+      validation_report: true,
+      sanemem_check: true,
+      orphan_cleanup: true,
+      system_clean: true
+    }
+    g[:step_timestamps] ||= {}
+    g
+  end
+end
+
+def reset_rewind_reminder
+  StateManager.update(:reminders) do |r|
+    r ||= {}
+    r[:rewind_at] = nil
+    r[:rewind_count] = 0
+    r
   end
 end
 
@@ -412,6 +446,7 @@ end
 def test_sanetools
   t = TierTest.new('sanetools')
   warn "\n=== SANETOOLS TESTS ==="
+  open_startup_gate
 
   # --- EASY TIER (20 tests) ---
   warn "\n  [EASY] Obvious blocking/allowing"
@@ -843,6 +878,7 @@ def test_sanetrack
   # Failure detection — verify rewind reminder fires on error
   t.test(:easy, "detects Bash failure via stderr", expected_exit: 0,
          expected_output: '/rewind') do
+    reset_rewind_reminder
     t.run_hook({
       'tool_name' => 'Bash',
       'tool_input' => { 'command' => 'false' },
@@ -1001,6 +1037,7 @@ def test_sanetrack
   # Error signature detection — verify stderr error text triggers failure path
   t.test(:hard, "error signature: COMMAND_NOT_FOUND", expected_exit: 0,
          expected_output: '/rewind') do
+    reset_rewind_reminder
     t.run_hook({
       'tool_name' => 'Bash',
       'tool_input' => { 'command' => 'test' },
@@ -1010,6 +1047,7 @@ def test_sanetrack
 
   t.test(:hard, "error signature: PERMISSION_DENIED", expected_exit: 0,
          expected_output: '/rewind') do
+    reset_rewind_reminder
     t.run_hook({
       'tool_name' => 'Bash',
       'tool_input' => { 'command' => 'test' },
@@ -1019,6 +1057,7 @@ def test_sanetrack
 
   t.test(:hard, "error signature: BUILD_FAILED", expected_exit: 0,
          expected_output: '/rewind') do
+    reset_rewind_reminder
     t.run_hook({
       'tool_name' => 'Bash',
       'tool_input' => { 'command' => 'test' },
@@ -1029,7 +1068,6 @@ def test_sanetrack
   # Empty research invalidation — set up research state first, then verify invalidation
   t.test(:hard, "empty research: WebSearch no results", expected_exit: 0,
          expected_output: 'RESEARCH INVALIDATED') do
-    require_relative '../core/state_manager'
     StateManager.update(:research) { |r| r[:web] = Time.now.iso8601; r }
     result = t.run_hook({
       'tool_name' => 'WebSearch',
@@ -1097,7 +1135,6 @@ def test_sanetrack
   # (nothing to invalidate), so use "No results found" pattern instead
   t.test(:villain, "empty research: Grep zero matches", expected_exit: 0,
          expected_output: 'RESEARCH INVALIDATED') do
-    require_relative '../core/state_manager'
     StateManager.update(:research) { |r| r[:local] = Time.now.iso8601; r }
     result = t.run_hook({
       'tool_name' => 'Grep',
@@ -1120,6 +1157,7 @@ def test_sanetrack
   # Actual error via error field
   t.test(:villain, "Edit error field", expected_exit: 0,
          expected_output: '/rewind') do
+    reset_rewind_reminder
     t.run_hook({
       'tool_name' => 'Edit',
       'tool_input' => { 'file_path' => '/tmp/test.rb' },
@@ -1130,6 +1168,7 @@ def test_sanetrack
   # Non-zero exit code detection
   t.test(:villain, "Bash non-zero exit code", expected_exit: 0,
          expected_output: '/rewind') do
+    reset_rewind_reminder
     t.run_hook({
       'tool_name' => 'Bash',
       'tool_input' => { 'command' => 'npm test' },
@@ -1140,6 +1179,7 @@ def test_sanetrack
   # Repeated error same signature
   t.test(:villain, "multiple errors same signature", expected_exit: 0,
          expected_output: '/rewind') do
+    reset_rewind_reminder
     t.run_hook({
       'tool_name' => 'Bash',
       'tool_input' => { 'command' => 'test3' },
