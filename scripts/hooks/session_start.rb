@@ -146,7 +146,6 @@ def handle_stale_saneloop
   warn "   Status: Never completed (session ended)"
   warn ''
   warn '   SaneLoops do not persist across sessions.'
-  warn '   Start fresh: ./Scripts/SaneMaster.rb saneloop start "Task" --promise "Done"'
   warn ''
 rescue StandardError => e
   warn "⚠️  Error checking SaneLoop state: #{e.message}"
@@ -638,6 +637,12 @@ def initialize_startup_gate
     timestamps[:system_clean] = Time.now.iso8601
   end
 
+  # Auto-complete sanemem_check if Sane-Mem is not installed
+  unless File.exist?(CLAUDE_MEM_DB) || File.exist?(File.expand_path('~/.claude-mem'))
+    steps[:sanemem_check] = true
+    timestamps[:sanemem_check] = Time.now.iso8601
+  end
+
   # If session_docs has no required docs, auto-complete that step
   session_docs = StateManager.get(:session_docs)
   if (session_docs[:required] || []).empty?
@@ -703,12 +708,11 @@ def build_session_context
     context_parts << "# [SaneProcess] Session Started"
     context_parts << briefing
   else
-    # Fallback for projects without .saneprocess
+    # Fallback for projects without .saneprocess manifest
     context_parts << "# [SaneProcess] Session Started"
     context_parts << "Project: #{project_name}"
     sop_file = find_sop_file
     context_parts << "SOP: #{sop_file}" if sop_file
-    context_parts << "⚠️  No .saneprocess manifest — run SaneMaster.rb bootstrap"
   end
 
   # Pattern rules count
@@ -770,7 +774,10 @@ begin
   log_debug "check_pending_mcp_actions done"
   show_mcp_verification_status # Show MCP status and prompt
   log_debug "show_mcp_verification_status done"
-  check_memory_health           # Catch silent memory failures early
+  # Only check memory health if Sane-Mem is installed
+  if File.exist?(CLAUDE_MEM_DB) || File.exist?(File.expand_path('~/.claude-mem'))
+    check_memory_health
+  end
   log_debug "check_memory_health done"
 
   # Output JSON to stdout for Claude Code to inject into context
