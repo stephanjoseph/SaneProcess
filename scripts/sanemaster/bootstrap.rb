@@ -428,7 +428,7 @@ module SaneMasterModules
       stuck_pids = `pgrep -f 'xcodebuild|xctest' 2>/dev/null`.strip.split
       stuck_pids.reject do |pid|
         cmd = `ps -p #{pid} -o command= 2>/dev/null`.strip
-        cmd.include?('xcodebuildmcp') || cmd.include?('XcodeBuildMCP')
+        cmd.include?('mcpbridge')
       end
     end
 

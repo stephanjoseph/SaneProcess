@@ -96,7 +96,7 @@ module SaneMasterModules
       stuck_pids = `pgrep -f 'xcodebuild|xctest' 2>/dev/null`.strip.split
       stuck_pids.reject do |pid|
         cmd = `ps -p #{pid} -o command= 2>/dev/null`.strip
-        cmd.include?('xcodebuildmcp') || cmd.include?('XcodeBuildMCP')
+        cmd.include?('mcpbridge')
       end
     end
 
@@ -559,9 +559,9 @@ module SaneMasterModules
         mcp = JSON.parse(File.read(mcp_file))
         servers = mcp['mcpServers'] || {}
 
-        # NOTE: XcodeBuildMCP is configured globally, not per-project
+        # NOTE: xcode MCP is configured globally (xcrun mcpbridge)
         # NOTE: Memory MCP removed Jan 2026 - using Sane-Mem (localhost:37777) instead
-        required = %w[apple-docs github context7]
+        required = %w[apple-docs github context7 xcode]
 
         required.each do |name|
           if servers[name]

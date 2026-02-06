@@ -36,11 +36,13 @@ module SaneMasterModules
 
       puts '🔨 --- [ SANEMASTER VERIFY ] ---'
       puts 'Building and running tests with progress monitoring...'
-      puts "⏱️  Timeout: #{timeout}s | Auto-handling permissions: ✅"
+      auto_permissions = args.include?('--grant-permissions') || ENV['SANEMASTER_GRANT_PERMISSIONS'] == '1'
+      permissions_status = auto_permissions ? '✅' : 'off (use --grant-permissions)'
+      puts "⏱️  Timeout: #{timeout}s | Auto-handling permissions: #{permissions_status}"
       puts include_ui ? '📱 Including UI tests (use --ui flag)' : '⚡ Unit tests only (use --ui to include UI tests)'
       puts ''
 
-      permission_monitor_pid = grant_test_permissions
+      permission_monitor_pid = auto_permissions ? grant_test_permissions : nil
       validate_test_references unless args.include?('--skip-test-validation')
 
       begin
@@ -252,7 +254,7 @@ module SaneMasterModules
       system('pkill', '-f', 'grant_permissions.applescript', err: File::NULL)
       system('pkill', '-f', 'xcodebuild test', err: File::NULL)
       system('pkill', '-f', "#{project_name}.*test", err: File::NULL)
-      # Use -x for exact match to avoid killing xcodebuildmcp MCP server
+      # Use -x for exact match to avoid killing helper processes
       system('pkill', '-9', '-x', 'xcodebuild', err: File::NULL)
       sleep(0.5)
       system('killall', '-9', 'xcodebuild', err: File::NULL)
@@ -384,7 +386,7 @@ module SaneMasterModules
       puts '🔪 Force killing all test processes...'
 
       3.times do |attempt|
-        # Use -x for exact match to avoid killing xcodebuildmcp MCP server
+        # Use -x for exact match to avoid killing helper processes
         system('pkill', '-9', '-f', 'xcodebuild test', err: File::NULL)
         system('pkill', '-9', '-x', 'xcodebuild', err: File::NULL)
         system('killall', '-9', 'xcodebuild', err: File::NULL)
@@ -493,7 +495,6 @@ module SaneMasterModules
         # Exclude: system processes, MCP servers, and npm processes
         cmd.include?('testmanagerd') ||
           cmd.include?('/usr/libexec/') ||
-          cmd.include?('xcodebuildmcp') ||
           cmd.include?('mcp') ||
           cmd.include?('npm exec')
       end

@@ -114,6 +114,51 @@ ruby scripts/sync_check.rb /path/to/other-project
 rsync -av scripts/hooks/ /path/to/other-project/scripts/hooks/
 ```
 
+## Release Pipeline
+
+SaneProcess provides a **unified release script** for all SaneApps macOS products. Every app uses the same pipeline — no local release scripts.
+
+### How It Works
+
+```
+.saneprocess (per-app YAML config)
+       ↓
+saneprocess_env.rb (YAML → env vars)
+       ↓
+release.sh (build → sign → notarize → DMG → Sparkle signature)
+       ↓
+set_dmg_icon.swift (applies Finder file icon)
+```
+
+### Running a Release
+
+From any app directory with a `.saneprocess` config:
+
+```bash
+# Standard release (build + sign + notarize + DMG)
+./scripts/SaneMaster.rb release
+
+# Full release (also bumps version, runs tests, creates GitHub release)
+./scripts/SaneMaster.rb release --full --version X.Y.Z --notes "Release notes"
+```
+
+### DMG Icon Configuration
+
+Each app's `.saneprocess` must define both icon types:
+
+```yaml
+release:
+  dmg:
+    volume_icon: Resources/DMGIcon.icns   # Mounted volume icon (Finder sidebar)
+    file_icon: Resources/DMGIcon.icns     # File icon (Desktop/Finder)
+```
+
+If `file_icon` is missing, the DMG gets a generic Finder icon. The `DMGIcon.icns` file should be a full-square opaque icon (no squircle, no shadow — macOS applies its own mask).
+
+### Full SOP
+
+See [templates/RELEASE_SOP.md](templates/RELEASE_SOP.md) for the complete release checklist including R2 upload, appcast update, and Cloudflare Pages deployment.
+
 ## Before Pushing
 
 1. `ruby scripts/qa.rb` - QA passes

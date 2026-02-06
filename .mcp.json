@@ -15,12 +15,6 @@
         "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
       }
     },
-    "XcodeBuildMCP": {
-      "command": "node",
-      "args": [
-        "/Users/sj/Dev/xcodebuild-mcp-local/build/index.js"
-      ]
-    },
     "macos-automator": {
       "command": "node",
       "args": [
@@ -47,7 +41,20 @@
       "command": "/Users/sj/.claude/plugins/cache/thedotmack/claude-mem/9.0.6/scripts/mcp-server.cjs"
     },
     "openaiDeveloperDocs": {
+      "type": "sse",
       "url": "https://developers.openai.com/mcp"
+    },
+    "xcode": {
+      "command": "xcrun",
+      "args": [
+        "mcpbridge"
+      ]
+    },
+    "nvidia-build": {
+      "command": "/Users/sj/.local/share/nvidia-mcp-venv/bin/python3",
+      "args": [
+        "/Users/sj/.local/share/nvidia-mcp-venv/nvidia_mcp_server.py"
+      ]
     }
   }
 }

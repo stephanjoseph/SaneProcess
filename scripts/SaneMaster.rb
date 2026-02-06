@@ -63,7 +63,7 @@ class SaneMaster
     build: {
       desc: 'Build, test, and validate code',
       commands: {
-        'verify' => { args: '[--ui] [--clean]', desc: 'Build and run tests (unit by default, --ui for UI)' },
+        'verify' => { args: '[--ui] [--clean] [--grant-permissions]', desc: 'Build and run tests (unit by default, --ui for UI)' },
         'clean' => { args: '[--nuclear]', desc: 'Wipe build cache and test states' },
         'lint' => { args: '', desc: 'Run SwiftLint and auto-fix issues' },
         'audit' => { args: '', desc: 'Scan for missing accessibility identifiers' },
@@ -572,16 +572,17 @@ class SaneMaster
   # rubocop:disable Lint/UselessConstantScoping
   COMMAND_DETAILS = {
     'verify' => {
-      usage: 'verify [--ui] [--clean]',
+      usage: 'verify [--ui] [--clean] [--grant-permissions]',
       description: 'Build the project and run tests',
       flags: {
         '--ui' => 'Run UI tests instead of unit tests',
         '--clean' => 'Clean build before testing'
       },
       examples: [
-        'verify           # Run unit tests',
-        'verify --ui      # Run UI tests',
-        'verify --clean   # Clean build first'
+        'verify                     # Run unit tests',
+        'verify --ui                # Run UI tests',
+        'verify --clean             # Clean build first',
+        'verify --grant-permissions # Reset/grant TCC permissions before tests'
       ]
     },
     'clean' => {

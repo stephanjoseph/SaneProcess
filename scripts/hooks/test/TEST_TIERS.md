@@ -28,7 +28,7 @@ Tests are NOT complete until hooks pass all three tiers.
 
 3. **BUG-PATTERN-MCP-KILL**
    - User reports 10+ times, Claude ignores
-   - Pattern match too broad (xcodebuild matches xcodebuildmcp)
+   - Pattern match too broad (xcodebuild matches helper processes)
 
 4. **Testing-Anti-Pattern**
    - "Self-tests that only test helper functions are USELESS"
