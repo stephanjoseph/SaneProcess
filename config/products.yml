@@ -37,6 +37,26 @@ products:
     github_repo: sane-apps/SaneHosts
     appcast: https://sanehosts.com/appcast.xml
 
+  sanesync:
+    name: SaneSync
+    domain: sanesync.com
+    dist_domain: dist.sanesync.com
+    github_repo: sane-apps/SaneSync
+    appcast: https://sanesync.com/appcast.xml
+
+  sanevideo:
+    name: SaneVideo
+    domain: sanevideo.com
+    dist_domain: dist.sanevideo.com
+    github_repo: sane-apps/SaneVideo
+    appcast: https://sanevideo.com/appcast.xml
+
+  sanesales:
+    name: SaneSales
+    type: ios
+    domain: sanesales.com
+    github_repo: sane-apps/SaneSales
+
 # LemonSqueezy store configuration
 store:
   slug: saneapps

@@ -29,6 +29,20 @@ class SyncCheck
   GLOBAL_HOOKS_DIR = File.expand_path('~/.claude/hooks')
   SANEMASTER_DIR = File.join(SANEPROCESS_ROOT, 'scripts', 'sanemaster')
   SETTINGS_TEMPLATE = File.join(SANEPROCESS_ROOT, '.claude', 'settings.json')
+  TEMPLATES_DIR = File.join(SANEPROCESS_ROOT, 'templates')
+  GOVERNANCE_DIR = File.join(File.dirname(File.dirname(SANEPROCESS_ROOT)), 'meta', 'governance')
+
+  # Config templates that should be synced to all projects
+  SYNC_CONFIGS = {
+    '.swiftlint.yml' => File.join(SANEPROCESS_ROOT, 'templates', 'swiftlint.yml'),
+    '.gitignore' => File.join(SANEPROCESS_ROOT, 'templates', 'gitignore'),
+    'lefthook.yml' => File.join(SANEPROCESS_ROOT, 'templates', 'lefthook.yml')
+  }.freeze
+
+  # Governance files that should be identical across all projects
+  SYNC_GOVERNANCE = %w[
+    CODE_OF_CONDUCT.md
+  ].freeze
 
   # Hooks that should be identical across all projects
   # PRIMARY HOOKS (new unified system)
@@ -226,6 +240,12 @@ class SyncCheck
           # C6 FIX: Handle settings.json sync
           src = SETTINGS_TEMPLATE
           dst = File.join(project_path, '.claude', 'settings.json')
+        elsif SYNC_CONFIGS.key?(diff[:file])
+          src = SYNC_CONFIGS[diff[:file]]
+          dst = File.join(project_path, diff[:file])
+        elsif SYNC_GOVERNANCE.include?(diff[:file])
+          src = File.join(GOVERNANCE_DIR, diff[:file])
+          dst = File.join(project_path, diff[:file])
         elsif diff[:file].start_with?('rules/')
           src = File.join(RULES_DIR, diff[:file].sub('rules/', ''))
           dst = File.join(project_path, '.claude', diff[:file])
@@ -266,19 +286,39 @@ class SyncCheck
   private
 
   def detect_sibling_projects
-    parent = File.dirname(SANEPROCESS_ROOT)
-    siblings = Dir.entries(parent).select do |entry|
-      next false if entry.start_with?('.')
-      next false if entry == 'SaneProcess'
+    # Check both infra/ siblings and apps/ directory
+    apps_dir = File.join(File.dirname(File.dirname(SANEPROCESS_ROOT)), 'apps')
+    infra_dir = File.dirname(SANEPROCESS_ROOT)
 
-      path = File.join(parent, entry)
-      # Check if it looks like a Sane* project (has Scripts/hooks or .claude/rules)
-      File.directory?(path) &&
-        (File.directory?(File.join(path, 'Scripts', 'hooks')) ||
-         File.directory?(File.join(path, '.claude', 'rules')))
+    projects = []
+
+    # Apps directory (primary location)
+    if File.directory?(apps_dir)
+      Dir.entries(apps_dir).each do |entry|
+        next if entry.start_with?('.')
+
+        path = File.join(apps_dir, entry)
+        next unless File.directory?(path)
+        next unless File.exist?(File.join(path, '.saneprocess')) ||
+                    File.directory?(File.join(path, '.claude', 'rules'))
+
+        projects << path
+      end
     end
 
-    siblings.map { |s| File.join(parent, s) }
+    # Infra siblings (legacy compatibility)
+    Dir.entries(infra_dir).each do |entry|
+      next if entry.start_with?('.')
+      next if entry == 'SaneProcess'
+
+      path = File.join(infra_dir, entry)
+      next unless File.directory?(path)
+      next unless File.exist?(File.join(path, '.saneprocess'))
+
+      projects << path unless projects.include?(path)
+    end
+
+    projects
   end
 
   def check_project(project_path)
@@ -311,6 +351,12 @@ class SyncCheck
 
     # C6 FIX: Check project settings.json
     check_settings(project_path)
+
+    # Check config templates (swiftlint, gitignore, lefthook)
+    check_configs(project_path)
+
+    # Check governance files (CODE_OF_CONDUCT)
+    check_governance(project_path)
 
     puts
   end
@@ -501,6 +547,71 @@ class SyncCheck
         file: "rules/#{rule}",
         status: '⚠️  DIFFERS',
         reason: 'Content differs from SaneProcess'
+      }
+    end
+  end
+
+  def check_configs(project_path)
+    project_name = File.basename(project_path)
+
+    SYNC_CONFIGS.each do |dest_name, template_path|
+      next unless File.exist?(template_path)
+
+      proj_path = File.join(project_path, dest_name)
+
+      unless File.exist?(proj_path)
+        @diffs << {
+          project: project_name,
+          file: dest_name,
+          status: '❌ MISSING',
+          reason: "#{dest_name} missing (template exists in SaneProcess)"
+        }
+        next
+      end
+
+      sp_content = File.read(template_path).strip
+      proj_content = File.read(proj_path).strip
+
+      next if sp_content == proj_content
+
+      @diffs << {
+        project: project_name,
+        file: dest_name,
+        status: '⚠️  DIFFERS',
+        reason: "#{dest_name} differs from SaneProcess template"
+      }
+    end
+  end
+
+  def check_governance(project_path)
+    project_name = File.basename(project_path)
+
+    SYNC_GOVERNANCE.each do |doc|
+      canonical = File.join(GOVERNANCE_DIR, doc)
+      next unless File.exist?(canonical)
+
+      proj_path = File.join(project_path, doc)
+
+      unless File.exist?(proj_path)
+        @diffs << {
+          project: project_name,
+          file: doc,
+          status: '❌ MISSING',
+          reason: "#{doc} missing (canonical in meta/governance/)"
+        }
+        next
+      end
+
+      sp_content = File.read(canonical).strip
+      proj_content = File.read(proj_path).strip
+
+      next if sp_content == proj_content
+
+      @diffs << {
+        project: project_name,
+        file: doc,
+        status: '⚠️  DIFFERS',
+        reason: "#{doc} differs from canonical meta/governance/ version"
       }
     end
   end
