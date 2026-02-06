@@ -13,6 +13,7 @@ require "uri"
 require "json"
 require "time"
 require "fileutils"
+require "shellwords"
 
 SANEAPPS_ROOT = File.expand_path("../../..", __dir__)
 LOG_FILE = File.join(SANEAPPS_ROOT, "infra/SaneProcess/outputs/link_monitor.log")
@@ -87,12 +88,6 @@ def check_url(url, max_redirects: MAX_REDIRECTS)
       return { status: :error, code: code, message: "Too many redirects" } if redirects > max_redirects
       uri = URI.parse(response["location"])
       next
-    end
-
-    if code >= 200 && code < 400
-      { status: :ok, code: code }
-    else
-      { status: :error, code: code, message: "HTTP #{code}" }
     end
 
     break { status: :ok, code: code } if code >= 200 && code < 400
@@ -192,14 +187,24 @@ rescue StandardError => e
 end
 
 def check_cf_domain_expiry(domain, token)
-  # Get zone ID
-  zones_response = `curl -s "https://api.cloudflare.com/client/v4/zones?name=#{domain}" -H "Authorization: Bearer #{token}"`
-  zones_data = JSON.parse(zones_response)
+  # Get zone ID (use Net::HTTP to avoid shell injection via domain/token)
+  uri = URI("https://api.cloudflare.com/client/v4/zones?name=#{URI.encode_www_form_component(domain)}")
+  http = Net::HTTP.new(uri.host, uri.port)
+  http.use_ssl = true
+  http.open_timeout = TIMEOUT
+  http.read_timeout = TIMEOUT
+  req = Net::HTTP::Get.new(uri)
+  req["Authorization"] = "Bearer #{token}"
+  zones_response = http.request(req)
+  zones_data = JSON.parse(zones_response.body)
   return nil unless zones_data["success"] && zones_data["result"]&.any?
 
   zone_id = zones_data["result"][0]["id"]
-  registrar_response = `curl -s "https://api.cloudflare.com/client/v4/zones/#{zone_id}" -H "Authorization: Bearer #{token}"`
-  registrar_data = JSON.parse(registrar_response)
+  reg_uri = URI("https://api.cloudflare.com/client/v4/zones/#{zone_id}")
+  reg_req = Net::HTTP::Get.new(reg_uri)
+  reg_req["Authorization"] = "Bearer #{token}"
+  registrar_response = http.request(reg_req)
+  registrar_data = JSON.parse(registrar_response.body)
 
   if registrar_data["success"]
     # Cloudflare API doesn't directly expose expiry, but we can check status
@@ -213,7 +218,7 @@ rescue StandardError
 end
 
 def check_whois_expiry(domain)
-  whois_output = `whois #{domain} 2>/dev/null`
+  whois_output = `whois #{Shellwords.shellescape(domain)} 2>/dev/null`
   return { status: :error, message: "whois command failed" } if whois_output.empty?
 
   # Parse expiry date (format varies by registrar)
@@ -243,7 +248,9 @@ rescue StandardError => e
 end
 
 def notify(title, message)
-  system("osascript", "-e", %[display notification "#{message}" with title "#{title}" sound name "Sosumi"])
+  safe_title = title.gsub('"', '\\"').gsub('\\', '\\\\')
+  safe_message = message.gsub('"', '\\"').gsub('\\', '\\\\')
+  system("osascript", "-e", %[display notification "#{safe_message}" with title "#{safe_title}" sound name "Sosumi"])
 end
 
 def log(message)

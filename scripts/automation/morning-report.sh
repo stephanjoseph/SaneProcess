@@ -26,6 +26,14 @@ REPOS="SaneBar SaneClick SaneClip SaneHosts SaneSync SaneVideo"
 
 mkdir -p "$CACHE_DIR" "$RAW_DIR"
 
+# Lock file to prevent concurrent writes (race condition if cron + manual overlap)
+LOCKFILE="$OUTPUT_DIR/.morning_report.lock"
+if ! mkdir "$LOCKFILE" 2>/dev/null; then
+  echo "Another morning-report instance is running (lock: $LOCKFILE)" >&2
+  exit 1
+fi
+trap 'rm -rf "$LOCKFILE"' EXIT
+
 # Pre-fetch API keys ONCE (sequential to avoid keychain popup flood)
 RESEND_KEY=""
 CF_TOKEN=""
@@ -595,15 +603,13 @@ section_api_health() {
     echo "**LemonSqueezy API:** ⚠️ API key not found" >> "$REPORT_FILE"
   fi
 
-  # GitHub accessibility
+  # GitHub accessibility (check exit code directly, not output text)
   if [[ -n "$GH_CMD" ]]; then
-    local gh_check
-    gh_check=$("$GH_CMD" api user 2>&1 || echo "error")
-    if [[ "$gh_check" != *"error"* ]] && [[ -n "$gh_check" ]]; then
+    if "$GH_CMD" api user --jq '.login' &>/dev/null; then
       echo "**GitHub API:** ✅ Accessible" >> "$REPORT_FILE"
       api_status="${api_status}GitHub: OK\n"
     else
-      echo "**GitHub API:** 🔴 Not accessible" >> "$REPORT_FILE"
+      echo "**GitHub API:** 🔴 Not accessible (auth may be expired)" >> "$REPORT_FILE"
       api_status="${api_status}GitHub: DOWN\n"
     fi
   else

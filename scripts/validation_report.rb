@@ -19,6 +19,9 @@
 require 'json'
 require 'date'
 require 'fileutils'
+require 'net/http'
+require 'uri'
+require 'shellwords'
 
 class ValidationReport
   SANE_APPS_ROOT = File.expand_path('~/SaneApps')
@@ -636,8 +639,8 @@ class ValidationReport
     # Test each URL (just the latest, to save time)
     latest_url = urls.first
     if latest_url
-      # Use curl to check if URL is accessible (returns 200 or 302)
-      status = `curl -sI -o /dev/null -w "%{http_code}" "#{latest_url}" 2>/dev/null`.strip
+      require 'shellwords'
+      status = `curl -sI -o /dev/null -w "%{http_code}" #{Shellwords.shellescape(latest_url)} 2>/dev/null`.strip
       unless ['200', '301', '302'].include?(status)
         issues << "[#{app_name}] Release DMG URL returns #{status}: #{latest_url}"
       end
@@ -662,8 +665,9 @@ class ValidationReport
     # Check if GitHub CLI is available
     return unless system('which gh > /dev/null 2>&1')
 
+    require 'shellwords'
     # DMGs must NEVER be on GitHub releases — distribution is Cloudflare R2 only
-    repo = "sane-apps/#{app_name}"
+    repo = "sane-apps/#{Shellwords.shellescape(app_name)}"
     result = `gh release list --repo #{repo} --limit 1 2>&1`
 
     if result && !result.include?('no releases found') && !result.include?('not found') && !result.strip.empty?
@@ -759,7 +763,7 @@ class ValidationReport
       case status
       when '200', '301', '302'
         # OK - also verify it's valid XML
-        xml_content = `curl -s --connect-timeout 5 "#{appcast[:url]}" 2>&1`
+        xml_content = `curl -s --connect-timeout 5 #{Shellwords.shellescape(appcast[:url])} 2>&1`
         unless xml_content.include?('<rss') || xml_content.include?('<feed')
           warnings_found << "#{appcast[:name]} doesn't appear to be valid XML"
         end
@@ -799,7 +803,8 @@ class ValidationReport
   end
 
   def check_url_status(url)
-    result = `curl -sI -o /dev/null -w "%{http_code}" --connect-timeout 5 "#{url}" 2>&1`
+    require 'shellwords'
+    result = `curl -sI -o /dev/null -w "%{http_code}" --connect-timeout 5 #{Shellwords.shellescape(url)} 2>&1`
     return 'timeout' if result.include?('Connection timed out') || result.include?('Could not resolve')
     return 'error' if result.include?('curl:')
     return '5xx' if result.start_with?('5')
@@ -900,32 +905,53 @@ class ValidationReport
     end
 
     # Check Resend API is working (if key exists)
+    # Use Net::HTTP to avoid leaking API keys in shell process list
     resend_key = `security find-generic-password -s "resend" -a "api_key" -w 2>/dev/null`.strip
     if resend_key && !resend_key.empty? && !resend_key.include?('could not')
-      # Quick API health check
-      api_check = `curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer #{resend_key}" "https://api.resend.com/emails" 2>/dev/null`
-      case api_check.strip
-      when '200'
-        # OK
-      when '401', '403'
-        issues_found << "Resend API key invalid (HTTP #{api_check.strip})"
-      else
-        warnings_found << "Resend API may be down (HTTP #{api_check.strip})"
+      begin
+        uri = URI("https://api.resend.com/emails")
+        http = Net::HTTP.new(uri.host, uri.port)
+        http.use_ssl = true
+        http.open_timeout = 5
+        http.read_timeout = 5
+        req = Net::HTTP::Get.new(uri)
+        req["Authorization"] = "Bearer #{resend_key}"
+        resp = http.request(req)
+        case resp.code
+        when '200'
+          # OK
+        when '401', '403'
+          issues_found << "Resend API key invalid (HTTP #{resp.code})"
+        else
+          warnings_found << "Resend API may be down (HTTP #{resp.code})"
+        end
+      rescue StandardError => e
+        warnings_found << "Resend API check failed: #{e.message}"
       end
     end
 
     # Check LemonSqueezy API is working (if key exists)
     ls_key = `security find-generic-password -s "lemonsqueezy" -a "api_key" -w 2>/dev/null`.strip
     if ls_key && !ls_key.empty? && !ls_key.include?('could not')
-      # Quick API health check
-      api_check = `curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer #{ls_key}" "https://api.lemonsqueezy.com/v1/products" 2>/dev/null`
-      case api_check.strip
-      when '200'
-        # OK
-      when '401', '403'
-        issues_found << "LemonSqueezy API key invalid (HTTP #{api_check.strip})"
-      else
-        warnings_found << "LemonSqueezy API may be down (HTTP #{api_check.strip})"
+      begin
+        uri = URI("https://api.lemonsqueezy.com/v1/products")
+        http = Net::HTTP.new(uri.host, uri.port)
+        http.use_ssl = true
+        http.open_timeout = 5
+        http.read_timeout = 5
+        req = Net::HTTP::Get.new(uri)
+        req["Authorization"] = "Bearer #{ls_key}"
+        resp = http.request(req)
+        case resp.code
+        when '200'
+          # OK
+        when '401', '403'
+          issues_found << "LemonSqueezy API key invalid (HTTP #{resp.code})"
+        else
+          warnings_found << "LemonSqueezy API may be down (HTTP #{resp.code})"
+        end
+      rescue StandardError => e
+        warnings_found << "LemonSqueezy API check failed: #{e.message}"
       end
     end
 
