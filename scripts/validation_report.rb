@@ -619,6 +619,12 @@ class ValidationReport
   def check_appcast_urls(appcast_path, app_name, issues, warnings)
     content = File.read(appcast_path)
 
+    # Verify it's valid XML first
+    unless content.include?('<rss') || content.include?('<item')
+      issues << "[#{app_name}] appcast.xml is not valid XML"
+      return
+    end
+
     # Extract enclosure URLs
     urls = content.scan(/url="([^"]+)"/).flatten.select { |u| u.include?('.dmg') }
 
@@ -633,7 +639,7 @@ class ValidationReport
       # Use curl to check if URL is accessible (returns 200 or 302)
       status = `curl -sI -o /dev/null -w "%{http_code}" "#{latest_url}" 2>/dev/null`.strip
       unless ['200', '301', '302'].include?(status)
-        issues << "[#{app_name}] Release URL returns #{status}: #{latest_url}"
+        issues << "[#{app_name}] Release DMG URL returns #{status}: #{latest_url}"
       end
     end
 
@@ -741,6 +747,47 @@ class ValidationReport
       end
     end
 
+    # Check Sparkle appcast feeds (CRITICAL - no updates if broken)
+    appcast_urls = [
+      { url: 'https://sanebar.com/appcast.xml', name: 'SaneBar appcast' },
+      { url: 'https://saneclick.com/appcast.xml', name: 'SaneClick appcast' },
+      { url: 'https://saneclip.com/appcast.xml', name: 'SaneClip appcast' },
+      { url: 'https://sanehosts.com/appcast.xml', name: 'SaneHosts appcast' }
+    ]
+    appcast_urls.each do |appcast|
+      status = check_url_status(appcast[:url])
+      case status
+      when '200', '301', '302'
+        # OK - also verify it's valid XML
+        xml_content = `curl -s --connect-timeout 5 "#{appcast[:url]}" 2>&1`
+        unless xml_content.include?('<rss') || xml_content.include?('<feed')
+          warnings_found << "#{appcast[:name]} doesn't appear to be valid XML"
+        end
+      else
+        issues_found << "UPDATE CRITICAL: #{appcast[:name]} (#{appcast[:url]}) returns #{status} - users cannot get updates!"
+      end
+    end
+
+    # Check distribution workers (Cloudflare R2 endpoints)
+    dist_urls = [
+      { url: 'https://dist.sanebar.com/', name: 'SaneBar dist worker' },
+      { url: 'https://dist.saneclick.com/', name: 'SaneClick dist worker' },
+      { url: 'https://dist.saneclip.com/', name: 'SaneClip dist worker' },
+      { url: 'https://dist.sanehosts.com/', name: 'SaneHosts dist worker' }
+      # SaneSync and SaneVideo not yet released - uncomment when active:
+      # { url: 'https://dist.sanesync.com/', name: 'SaneSync dist worker' },
+      # { url: 'https://dist.sanevideo.com/', name: 'SaneVideo dist worker' }
+    ]
+    dist_urls.each do |dist|
+      status = check_url_status(dist[:url])
+      case status
+      when '200', '301', '302', '403', '404'
+        # 403 and 404 are OK for root - workers respond to specific file paths
+      else
+        issues_found << "DOWNLOAD CRITICAL: #{dist[:name]} (#{dist[:url]}) returns #{status} - downloads fail!"
+      end
+    end
+
     @metrics[:website_distribution] = {
       issues: issues_found.size,
       warnings: warnings_found.size,
@@ -838,7 +885,7 @@ class ValidationReport
     issues_found = []
     warnings_found = []
 
-    # Check keychain has required credentials
+    # Check keychain has required credentials (ONE AT A TIME to avoid keychain popup flood)
     keychain_items = [
       { service: 'cloudflare', account: 'api_token', name: 'Cloudflare API' },
       { service: 'resend', account: 'api_key', name: 'Resend Email API' },
@@ -853,12 +900,32 @@ class ValidationReport
     end
 
     # Check Resend API is working (if key exists)
-    resend_check = `security find-generic-password -s "resend" -a "api_key" -w 2>/dev/null`.strip
-    if resend_check && !resend_check.empty? && !resend_check.include?('could not')
-      # Quick API health check (don't actually send)
-      api_check = `curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer #{resend_check}" "https://api.resend.com/domains" 2>/dev/null`
-      unless ['200', '401', '403'].include?(api_check.strip)
-        warnings_found << "Resend API may be down or key invalid"
+    resend_key = `security find-generic-password -s "resend" -a "api_key" -w 2>/dev/null`.strip
+    if resend_key && !resend_key.empty? && !resend_key.include?('could not')
+      # Quick API health check
+      api_check = `curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer #{resend_key}" "https://api.resend.com/emails" 2>/dev/null`
+      case api_check.strip
+      when '200'
+        # OK
+      when '401', '403'
+        issues_found << "Resend API key invalid (HTTP #{api_check.strip})"
+      else
+        warnings_found << "Resend API may be down (HTTP #{api_check.strip})"
+      end
+    end
+
+    # Check LemonSqueezy API is working (if key exists)
+    ls_key = `security find-generic-password -s "lemonsqueezy" -a "api_key" -w 2>/dev/null`.strip
+    if ls_key && !ls_key.empty? && !ls_key.include?('could not')
+      # Quick API health check
+      api_check = `curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer #{ls_key}" "https://api.lemonsqueezy.com/v1/products" 2>/dev/null`
+      case api_check.strip
+      when '200'
+        # OK
+      when '401', '403'
+        issues_found << "LemonSqueezy API key invalid (HTTP #{api_check.strip})"
+      else
+        warnings_found << "LemonSqueezy API may be down (HTTP #{api_check.strip})"
       end
     end
 

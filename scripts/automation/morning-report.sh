@@ -557,6 +557,74 @@ Format as a clean funnel with percentages. Be precise with numbers, estimate whe
 }
 
 # =============================================================================
+# Section 5a: API Health Check
+# =============================================================================
+section_api_health() {
+  echo "## 🔌 API Health" >> "$REPORT_FILE"
+  echo "" >> "$REPORT_FILE"
+
+  local api_status=""
+
+  # Resend API health (email)
+  if [[ -n "$RESEND_KEY" ]]; then
+    local resend_check
+    resend_check=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $RESEND_KEY" "https://api.resend.com/emails" 2>/dev/null || echo "error")
+    if [[ "$resend_check" == "200" ]]; then
+      echo "**Resend Email API:** ✅ Responding (200)" >> "$REPORT_FILE"
+      api_status="${api_status}Resend: OK\n"
+    else
+      echo "**Resend Email API:** 🔴 DOWN (HTTP $resend_check)" >> "$REPORT_FILE"
+      api_status="${api_status}Resend: DOWN ($resend_check)\n"
+    fi
+  else
+    echo "**Resend Email API:** ⚠️ API key not found" >> "$REPORT_FILE"
+  fi
+
+  # LemonSqueezy API health (revenue)
+  if [[ -n "$LS_KEY" ]]; then
+    local ls_check
+    ls_check=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $LS_KEY" "https://api.lemonsqueezy.com/v1/products" 2>/dev/null || echo "error")
+    if [[ "$ls_check" == "200" ]]; then
+      echo "**LemonSqueezy API:** ✅ Responding (200)" >> "$REPORT_FILE"
+      api_status="${api_status}LemonSqueezy: OK\n"
+    else
+      echo "**LemonSqueezy API:** 🔴 DOWN (HTTP $ls_check)" >> "$REPORT_FILE"
+      api_status="${api_status}LemonSqueezy: DOWN ($ls_check)\n"
+    fi
+  else
+    echo "**LemonSqueezy API:** ⚠️ API key not found" >> "$REPORT_FILE"
+  fi
+
+  # GitHub accessibility
+  if [[ -n "$GH_CMD" ]]; then
+    local gh_check
+    gh_check=$("$GH_CMD" api user 2>&1 || echo "error")
+    if [[ "$gh_check" != *"error"* ]] && [[ -n "$gh_check" ]]; then
+      echo "**GitHub API:** ✅ Accessible" >> "$REPORT_FILE"
+      api_status="${api_status}GitHub: OK\n"
+    else
+      echo "**GitHub API:** 🔴 Not accessible" >> "$REPORT_FILE"
+      api_status="${api_status}GitHub: DOWN\n"
+    fi
+  else
+    echo "**GitHub API:** ⚠️ gh CLI not installed" >> "$REPORT_FILE"
+  fi
+
+  echo "" >> "$REPORT_FILE"
+
+  # Alert on any API failures
+  if echo "$api_status" | grep -q "DOWN"; then
+    echo "**🚨 ACTION REQUIRED: One or more critical APIs are down!**" >> "$REPORT_FILE"
+    echo "" >> "$REPORT_FILE"
+    # macOS notification for critical issue
+    osascript -e "display notification \"Critical API(s) down - check morning report\" with title \"SaneApps ALERT\" sound name \"Sosumi\"" 2>/dev/null
+  fi
+
+  echo "---" >> "$REPORT_FILE"
+  echo "" >> "$REPORT_FILE"
+}
+
+# =============================================================================
 # Section 5b: Sales Infrastructure Health Check
 # =============================================================================
 section_sales_infrastructure() {
@@ -634,6 +702,62 @@ if details:
       failures=$((failures + 1))
     fi
     infra_raw="${infra_raw}\n${name} checkout: HTTP ${status}"
+  done
+
+  echo "" >> "$REPORT_FILE"
+
+  # Check appcast feeds (CRITICAL - no updates if broken)
+  echo "**Appcast Feeds:**" >> "$REPORT_FILE"
+  echo "" >> "$REPORT_FILE"
+
+  local appcast_urls=(
+    "https://sanebar.com/appcast.xml|SaneBar"
+    "https://saneclick.com/appcast.xml|SaneClick"
+    "https://saneclip.com/appcast.xml|SaneClip"
+    "https://sanehosts.com/appcast.xml|SaneHosts"
+  )
+
+  for entry in "${appcast_urls[@]}"; do
+    IFS='|' read -r url name <<< "$entry"
+    local status
+    status=$(curl -sI -o /dev/null -w "%{http_code}" --connect-timeout 10 "$url" 2>/dev/null)
+    if [[ "$status" == "200" ]] || [[ "$status" == "301" ]] || [[ "$status" == "302" ]]; then
+      echo "- $name: $status" >> "$REPORT_FILE"
+    else
+      echo "- **🔴 $name: $status (BROKEN - NO UPDATES FOR USERS!)**" >> "$REPORT_FILE"
+      failures=$((failures + 1))
+    fi
+    infra_raw="${infra_raw}\n${name} appcast: HTTP ${status}"
+  done
+
+  echo "" >> "$REPORT_FILE"
+
+  # Check dist workers
+  echo "**Distribution Workers (R2 Download Endpoints):**" >> "$REPORT_FILE"
+  echo "" >> "$REPORT_FILE"
+
+  local dist_urls=(
+    "https://dist.sanebar.com/|SaneBar"
+    "https://dist.saneclick.com/|SaneClick"
+    "https://dist.saneclip.com/|SaneClip"
+    "https://dist.sanehosts.com/|SaneHosts"
+    # SaneSync and SaneVideo not yet released - uncomment when active:
+    # "https://dist.sanesync.com/|SaneSync"
+    # "https://dist.sanevideo.com/|SaneVideo"
+  )
+
+  for entry in "${dist_urls[@]}"; do
+    IFS='|' read -r url name <<< "$entry"
+    local status
+    status=$(curl -sI -o /dev/null -w "%{http_code}" --connect-timeout 10 "$url" 2>/dev/null)
+    # 404 and 403 are OK for root - workers respond to specific file paths
+    if [[ "$status" == "200" ]] || [[ "$status" == "301" ]] || [[ "$status" == "302" ]] || [[ "$status" == "403" ]] || [[ "$status" == "404" ]]; then
+      echo "- $name: $status" >> "$REPORT_FILE"
+    else
+      echo "- **🔴 $name: $status (BROKEN - DOWNLOADS FAIL!)**" >> "$REPORT_FILE"
+      failures=$((failures + 1))
+    fi
+    infra_raw="${infra_raw}\n${name} dist: HTTP ${status}"
   done
 
   echo "" >> "$REPORT_FILE"
@@ -819,6 +943,9 @@ safe_section "Customer Intel" section_customer_intel
 
 # Analysis section (reads cache from above)
 safe_section "Conversion Funnel" section_funnel
+
+# API health (CRITICAL - catches API outages)
+safe_section "API Health" section_api_health
 
 # Sales infrastructure health (CRITICAL - catches dead checkout links)
 safe_section "Sales Infrastructure" section_sales_infrastructure
