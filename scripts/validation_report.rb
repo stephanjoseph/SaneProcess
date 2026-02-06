@@ -720,7 +720,8 @@ class ValidationReport
     config_file = File.join(SANE_APPS_ROOT, 'infra/SaneProcess/config/products.yml')
     product_config = YAML.safe_load(File.read(config_file), permitted_classes: [])
     store_base = product_config.dig('store', 'checkout_base')
-    checkout_links = product_config['products'].map do |_slug, prod|
+    checkout_links = product_config['products'].filter_map do |_slug, prod|
+      next unless prod['checkout_uuid']
       { url: "#{store_base}/#{prod['checkout_uuid']}", name: "#{prod['name']} checkout" }
     end
     checkout_links << { url: product_config.dig('store', 'base_url'), name: 'LemonSqueezy store' }
@@ -987,11 +988,12 @@ class ValidationReport
       # Get version from Info.plist or Package.swift
       bundle_version = get_bundle_version(project_path, app_name)
 
-      # Check README mentions current version
+      # Check README mentions current version (skip if using dynamic GitHub release badge)
       readme = File.join(project_path, 'README.md')
       if File.exist?(readme)
         readme_content = File.read(readme)
-        if appcast_version && !readme_content.include?(appcast_version)
+        has_release_badge = readme_content.include?('shields.io/github/v/release')
+        if appcast_version && !has_release_badge && !readme_content.include?(appcast_version)
           warnings_found << "[#{app_name}] README may not mention latest version #{appcast_version}"
         end
       end
@@ -1017,6 +1019,39 @@ class ValidationReport
         age_days = (Time.now - File.mtime(handoff)) / 86400
         if age_days > 7
           warnings_found << "[#{app_name}] SESSION_HANDOFF.md is #{age_days.round} days old"
+        end
+      end
+
+      # Q10.6: 5-Doc Standard (CHANGELOG + SESSION_HANDOFF checked above)
+      unless File.exist?(readme)
+        issues_found << "[#{app_name}] Missing README.md (5-doc standard)"
+      end
+
+      development = File.join(project_path, 'DEVELOPMENT.md')
+      unless File.exist?(development)
+        warnings_found << "[#{app_name}] Missing DEVELOPMENT.md (5-doc standard)"
+      end
+
+      architecture = File.join(project_path, 'ARCHITECTURE.md')
+      unless File.exist?(architecture)
+        warnings_found << "[#{app_name}] Missing ARCHITECTURE.md (5-doc standard)"
+      end
+
+      # Q10.7: Internal Link Validation (project root .md files only)
+      Dir.glob(File.join(project_path, '*.md')).each do |md_file|
+        md_content = File.read(md_file)
+        md_basename = File.basename(md_file)
+        md_content.scan(/\[([^\]]*)\]\(([^)]+)\)/).each do |_text, link|
+          next if link.start_with?('http', '#', 'mailto:')
+
+          # Strip anchor fragments
+          link_path = link.split('#').first
+          next if link_path.nil? || link_path.empty?
+
+          resolved = File.expand_path(link_path, project_path)
+          unless File.exist?(resolved)
+            warnings_found << "[#{app_name}] #{md_basename} has broken link: #{link_path}"
+          end
         end
       end
     end
