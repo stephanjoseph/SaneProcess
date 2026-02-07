@@ -103,7 +103,7 @@ claude plugin install sane-loop@claude-plugins-official
 mkdir -p Scripts/hooks .claude
 touch Scripts/build.rb Scripts/hooks/circuit_breaker.rb
 touch .claude/settings.json .mcp.json lefthook.yml project.yml
-touch DEVELOPMENT.md BUG_TRACKING.md
+touch DEVELOPMENT.md
 ```
 
 ## Step 3: Configure Files (5 min)
@@ -417,12 +417,12 @@ killall -9 <app-name>         # KILL
 
 ## Rule #8: BUG FOUND? WRITE IT DOWN
 
-✅ DO: Document bugs in TodoWrite immediately, tracking file after
+✅ DO: Document bugs in GitHub Issues immediately, tracking fix after
 ❌ DON'T: Try to remember bugs or skip documentation
 
 ```
-🟢 RIGHT: TodoWrite: "BUG: Camera - black screen on launch"
-🟢 RIGHT: Update BUG_TRACKING.md with root cause after fix
+🟢 RIGHT: GitHub Issue: "BUG: Camera - black screen on launch"
+🟢 RIGHT: Update issue with root cause after fix
 🔴 WRONG: "I'll remember to fix that later"
 🔴 WRONG: Fix bug without documenting what caused it
 ```

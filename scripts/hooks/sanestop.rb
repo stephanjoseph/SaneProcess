@@ -23,9 +23,7 @@ require 'time'
 require_relative 'core/state_manager'
 
 LOG_FILE = File.expand_path('../../.claude/sanestop.log', __dir__)
-# DEPRECATED: Memory staging file no longer used (Jan 2026) - Memory MCP removed
-# Kept for reference in case old files need cleanup
-MEMORY_STAGING_FILE = File.expand_path('../../.claude/memory_staging.json', __dir__)
+SOP_CSV = File.expand_path('../../outputs/sop_ratings.csv', __dir__)
 
 # === CONFIGURATION ===
 
@@ -206,17 +204,6 @@ def update_session_patterns(violations, sop_score)
   end
 rescue StandardError
   # Don't fail on state errors
-end
-
-# === MEMORY MCP STAGING (DEPRECATED - Jan 2026) ===
-# Memory MCP has been removed. Memory learnings are now auto-captured by
-# Sane-Mem (localhost:37777) via hooks.
-#
-# This stub function exists to prevent NoMethodError calls from main().
-
-def stage_memory_learnings(_violations, _sop_score)
-  # No-op: Memory MCP removed (Jan 2026)
-  # Learnings auto-captured by Sane-Mem
 end
 
 # === TODO ENFORCEMENT (inspired by jarrodwatts/claude-code-config) ===
@@ -515,9 +502,6 @@ def save_session_learnings
   # Check weasel words in recent edits
   check_weasel_words
 
-  # Stage high-value learnings for Memory MCP
-  stage_memory_learnings(violations, sop_score)
-
   # Update validation metrics (Q1 block accuracy, Q2 missed doom loops, Q4 session counts)
   update_validation_metrics
 
@@ -528,8 +512,29 @@ end
 def log_session(stats)
   FileUtils.mkdir_p(File.dirname(LOG_FILE))
   File.open(LOG_FILE, 'a') { |f| f.puts(stats.to_json) }
+
+  # Append SOP score to CSV for validation_report.rb trend tracking
+  append_sop_csv(stats[:sop_score], stats[:violations])
 rescue StandardError
   # Don't fail on logging errors
+end
+
+def append_sop_csv(score, violations)
+  return unless score
+
+  csv_dir = File.dirname(SOP_CSV)
+  FileUtils.mkdir_p(csv_dir)
+
+  # Create header if file doesn't exist or is empty
+  unless File.exist?(SOP_CSV) && File.size(SOP_CSV) > 0
+    File.write(SOP_CSV, "date,sop_score,notes\n")
+  end
+
+  violation_count = violations.is_a?(Hash) ? violations.values.sum : violations.to_i
+  notes = violation_count > 0 ? "#{violation_count} violations" : 'clean session'
+  File.open(SOP_CSV, 'a') { |f| f.puts("#{Date.today},#{score},#{notes}") }
+rescue StandardError
+  # Don't fail on CSV errors
 end
 
 # === MAIN PROCESSING ===

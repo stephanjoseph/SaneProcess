@@ -27,10 +27,20 @@ REPOS="SaneBar SaneClick SaneClip SaneHosts SaneSync SaneVideo"
 mkdir -p "$CACHE_DIR" "$RAW_DIR"
 
 # Lock file to prevent concurrent writes (race condition if cron + manual overlap)
+# Stale lock detection: if lock is older than 30 minutes, assume crash and reclaim
 LOCKFILE="$OUTPUT_DIR/.morning_report.lock"
 if ! mkdir "$LOCKFILE" 2>/dev/null; then
-  echo "Another morning-report instance is running (lock: $LOCKFILE)" >&2
-  exit 1
+  if [ -d "$LOCKFILE" ]; then
+    lock_age=$(( $(date +%s) - $(stat -f %m "$LOCKFILE" 2>/dev/null || echo 0) ))
+    if [ "$lock_age" -gt 1800 ]; then
+      echo "Stale lock detected (${lock_age}s old) — reclaiming" >&2
+      rm -rf "$LOCKFILE"
+      mkdir "$LOCKFILE" 2>/dev/null || { echo "Failed to reclaim lock" >&2; exit 1; }
+    else
+      echo "Another morning-report instance is running (lock: $LOCKFILE, age: ${lock_age}s)" >&2
+      exit 1
+    fi
+  fi
 fi
 trap 'rm -rf "$LOCKFILE"' EXIT
 
@@ -687,7 +697,7 @@ if details:
   echo "" >> "$REPORT_FILE"
 
   # Check LemonSqueezy checkout links (UUIDs from products.yml — single source of truth)
-  local config_file="$SANEAPPS_ROOT/infra/SaneProcess/config/products.yml"
+  local config_file="/Users/sj/SaneApps/infra/SaneProcess/config/products.yml"
   if [ ! -f "$config_file" ]; then
     echo "- **Config missing:** $config_file not found" >> "$REPORT_FILE"
     return

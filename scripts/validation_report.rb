@@ -450,6 +450,22 @@ class ValidationReport
       all_scores.concat(scores)
     end
 
+    # Also read from sop_ratings.csv (written by sanestop.rb) as canonical source
+    # CSV is the durable record; state.json session_scores rotate (last 10 per project)
+    csv_path = File.join(File.dirname(__FILE__), '..', 'outputs', 'sop_ratings.csv')
+    if File.exist?(csv_path)
+      csv_scores = []
+      File.readlines(csv_path).drop(1).each do |line|
+        # CSV format: date,sop_score,notes (notes may contain commas)
+        parts = line.strip.split(',', 3)
+        score = parts[1]&.to_i
+        csv_scores << score if score && score > 0
+      end
+      # Prefer CSV when it has data (it's the persistent record)
+      # State.json session_scores are per-project rolling windows
+      all_scores = csv_scores if csv_scores.size > all_scores.size
+    end
+
     if all_scores.empty?
       @metrics[:score_integrity] = { status: 'NO DATA' }
       return
@@ -726,7 +742,7 @@ class ValidationReport
     end
     checkout_links << { url: product_config.dig('store', 'base_url'), name: 'LemonSqueezy store' }
     checkout_links.each do |link|
-      status = check_url_status(link[:url])
+      status = check_url_status(link[:url], follow_redirects: true)
       case status
       when '200', '301', '302'
         # OK
@@ -802,9 +818,15 @@ class ValidationReport
     warnings_found.each { |w| @warnings << "Q7 WEBSITE: #{w}" }
   end
 
-  def check_url_status(url)
-    result = `curl -sI -o /dev/null -w "%{http_code}" --connect-timeout 5 #{Shellwords.shellescape(url)} 2>&1`
-    return 'timeout' if result.include?('Connection timed out') || result.include?('Could not resolve')
+  def check_url_status(url, follow_redirects: false)
+    escaped_url = Shellwords.shellescape(url)
+    cmd = if follow_redirects
+            "curl -sI -L -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 15 #{escaped_url} 2>&1"
+          else
+            "curl -sI -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 15 #{escaped_url} 2>&1"
+          end
+    result = `#{cmd}`
+    return 'timeout' if result.include?('Connection timed out') || result.include?('Could not resolve') || result.include?('Operation timed out')
     return 'error' if result.include?('curl:')
     return '5xx' if result.start_with?('5')
     result.strip
@@ -875,9 +897,9 @@ class ValidationReport
     releases = Dir.glob(File.join(project_path, 'releases', '*.app')).select { |f| File.exist?(f) }
     return releases.max_by { |f| File.mtime(f) } if releases.any?
 
-    # Check DerivedData
+    # Check DerivedData Release builds only (Debug builds are never Developer ID signed)
     derived_data = File.expand_path('~/Library/Developer/Xcode/DerivedData')
-    apps = Dir.glob(File.join(derived_data, "#{app_name}*/**/#{app_name}.app")).select { |f| File.exist?(f) }
+    apps = Dir.glob(File.join(derived_data, "#{app_name}*/Build/Products/Release/#{app_name}.app")).select { |f| File.exist?(f) }
     return apps.max_by { |f| File.mtime(f) } if apps.any?
 
     nil
@@ -1497,11 +1519,12 @@ class ValidationReport
       checklist << { name: "Cloudflare DNS/CDN", status: :todo }
     end
 
-    # 16. Website has download link (check for github.com/releases or lemonsqueezy)
+    # 16. Website has download link (check for github.com/releases, lemonsqueezy, or go.saneapps.com)
     if website_works
       page_content = `curl -sL --connect-timeout 5 "#{website_url}" 2>/dev/null`
       has_download = page_content.include?('github.com') && page_content.include?('releases') ||
                      page_content.include?('lemonsqueezy.com') ||
+                     page_content.include?('go.saneapps.com') ||
                      page_content.include?('.dmg')
       checklist << { name: "Website has download link", status: has_download ? :done : :todo }
     else
@@ -1525,12 +1548,22 @@ class ValidationReport
     # PAYMENT & LICENSING
     # ===========================================
 
-    # 18. Lemon Squeezy product configured (check website for lemonsqueezy link)
+    # 18. Lemon Squeezy product configured (check website or products.yml for checkout config)
     if website_works
       page_content = `curl -sL --connect-timeout 5 "#{website_url}" 2>/dev/null` rescue ''
       has_lemonsqueezy = page_content.include?('lemonsqueezy.com') ||
                          page_content.include?('lemon-squeezy') ||
+                         page_content.include?('go.saneapps.com/buy') ||
                          page_content.include?('checkout')
+      # Also check products.yml as the canonical source of truth
+      unless has_lemonsqueezy
+        config_file = File.join(SANE_APPS_ROOT, 'infra/SaneProcess/config/products.yml')
+        if File.exist?(config_file)
+          product_config = YAML.safe_load(File.read(config_file), permitted_classes: [])
+          slug = app_name.downcase.gsub(/^sane/, 'sane')
+          has_lemonsqueezy = product_config['products']&.dig(slug, 'checkout_uuid') ? true : false
+        end
+      end
       checklist << { name: "Lemon Squeezy store configured", status: has_lemonsqueezy ? :done : :todo }
     else
       checklist << { name: "Lemon Squeezy store configured", status: :todo }

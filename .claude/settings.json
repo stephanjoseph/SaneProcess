@@ -26,27 +26,27 @@
       "Bash(curl:*)",
       "Bash(which:*)",
       "Bash(ruby:*)",
+      "Bash(ssh:*)",
       "Bash(/opt/homebrew/opt/ruby/bin/*:*)",
       "mcp__apple-docs__*",
       "mcp__context7__*",
       "mcp__github__*",
       "mcp__gemini__*",
-      "mcp__XcodeBuildMCP__*",
-      "mcp__macos-automator__*"
+      "mcp__macos-automator__*",
+      "mcp__xcode__*",
+      "mcp__nvidia-build__*"
     ]
   },
   "enabledPlugins": {
     "swift-lsp@claude-plugins-official": true,
     "code-review@claude-plugins-official": true,
     "security-guidance@claude-plugins-official": true,
-    "ralph-wiggum@claude-plugins-official": true,
     "claude-mem@thedotmack": true,
     "frontend-design@claude-plugins-official": true,
     "context7@claude-plugins-official": true,
     "feature-dev@claude-plugins-official": true,
     "serena@claude-plugins-official": true,
-    "hookify@claude-plugins-official": true,
-    "sane-skills@local": true
+    "hookify@claude-plugins-official": true
   },
   "hooks": {
     "SessionStart": [
@@ -99,6 +99,28 @@
             "type": "command",
             "command": "ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/swift_format.rb || true",
             "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/mini_build_async.rb || true",
+            "timeout": 120,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "TaskCompleted": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/task_completed_gate.rb || true",
+            "timeout": 5
           }
         ]
       }
