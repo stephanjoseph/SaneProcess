@@ -57,7 +57,9 @@ security add-generic-password -s cloudflare -a api_token -w "YOUR_TOKEN"
 |-----------|-------|
 | Team ID | `M78L6FXD48` |
 | Signing Identity | `Developer ID Application: Stephan Joseph (M78L6FXD48)` |
-| Key ID | `7LMFF3A258` |
+| Primary API Key ID | `S34998ZCRT` (SaneApps — Admin access) |
+| Issuer ID | `c98b1e0a-8d10-4fce-a417-536b31c09bfb` |
+| .p8 Location | `~/.private_keys/AuthKey_S34998ZCRT.p8` |
 
 **Setup:**
 1. Get invited to the Apple Developer team
@@ -65,11 +67,11 @@ security add-generic-password -s cloudflare -a api_token -w "YOUR_TOKEN"
 3. Store notarization profile:
 ```bash
 xcrun notarytool store-credentials "notarytool" \
-  --apple-id "YOUR_APPLE_ID" \
-  --team-id "M78L6FXD48" \
-  --password "APP_SPECIFIC_PASSWORD"
+  --key ~/.private_keys/AuthKey_S34998ZCRT.p8 \
+  --key-id S34998ZCRT \
+  --issuer c98b1e0a-8d10-4fce-a417-536b31c09bfb
 ```
-4. Get the App Store Connect API key (`AuthKey_7LMFF3A258.p8`) from owner, place in `fastlane/keys/`
+4. Copy `.p8` file from owner to `~/.private_keys/AuthKey_S34998ZCRT.p8` (chmod 600)
 
 ---
 
