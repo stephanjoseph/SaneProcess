@@ -320,77 +320,131 @@ rescue StandardError => e
 end
 
 # === ORPHANED PROCESS CLEANUP ===
-# Clean up orphaned Claude processes from previous sessions
+# Clean up truly orphaned processes — those whose parent Claude session is DEAD.
+# CRITICAL: Never kill processes belonging to OTHER living Claude sessions.
+# The user may intentionally run multiple Claude instances in parallel.
 
-# Get all ancestor PIDs of a process
-def get_ancestor_pids(pid)
-  ancestors = []
+# Build parent→children map from ps output (cached for reuse across cleanup functions)
+def build_process_maps
+  return @process_maps if @process_maps
+
+  ps_lines = `ps -eo pid,ppid,command 2>/dev/null`.lines rescue []
+  children_map = Hash.new { |h, k| h[k] = [] }
+  command_map = {}
+
+  ps_lines.each do |line|
+    parts = line.strip.split(/\s+/, 3)
+    next if parts.length < 2
+    pid = parts[0].to_i
+    ppid = parts[1].to_i
+    cmd = parts[2] || ''
+    next unless pid.positive? && ppid.positive?
+    children_map[ppid] << pid
+    command_map[pid] = cmd
+  end
+
+  @process_maps = { children: children_map, commands: command_map }
+end
+
+# Check if a process is alive
+def process_alive?(pid)
+  Process.kill(0, pid)
+  true
+rescue Errno::ESRCH
+  false
+rescue Errno::EPERM
+  true # exists but we can't signal it
+end
+
+# Check if a process has a living Claude ancestor (meaning it's NOT an orphan)
+def has_living_claude_ancestor?(pid)
+  maps = build_process_maps
   current = pid
-  10.times do # Max depth to prevent infinite loop
+  10.times do
     ppid = `ps -o ppid= -p #{current} 2>/dev/null`.strip.to_i rescue 0
-    break if ppid <= 1
-    ancestors << ppid
+    break if ppid <= 1 # Reached init/launchd — no Claude ancestor found
+    cmd = maps[:commands][ppid] || ''
+    # A Claude session parent process
+    if cmd.include?('claude') && !cmd.include?('grep')
+      return process_alive?(ppid)
+    end
     current = ppid
   end
-  ancestors
+  false # No Claude ancestor found — this is an orphan
 end
 
 # Get all PIDs in a process's descendant tree
 def get_process_tree(root_pid)
+  maps = build_process_maps
   tree = [root_pid]
-
-  # Build parent->children map
-  ps_output = `ps -eo pid,ppid 2>/dev/null`.lines rescue []
-  children_map = Hash.new { |h, k| h[k] = [] }
-
-  ps_output.each do |line|
-    parts = line.split
-    next if parts.length < 2
-    pid = parts[0].to_i
-    ppid = parts[1].to_i
-    children_map[ppid] << pid if pid.positive? && ppid.positive?
-  end
-
-  # BFS to find all descendants
   queue = [root_pid]
   while queue.any?
     current = queue.shift
-    children = children_map[current]
+    children = maps[:children][current] || []
     children.each do |child|
       tree << child
       queue << child
     end
   end
-
   tree
 end
 
+# Find all living Claude session PIDs (all instances, not just current)
+def find_all_claude_session_pids
+  maps = build_process_maps
+  pids = []
+  maps[:commands].each do |pid, cmd|
+    # Claude Code sessions: look for the main CLI process
+    if cmd.include?('claude') && !cmd.include?('--resume') && !cmd.include?('grep')
+      pids << pid if process_alive?(pid)
+    end
+  end
+  # Always include current session's parent
+  pids << Process.ppid
+  pids.uniq
+end
+
+# Build combined tree of ALL living Claude sessions
+def get_all_claude_trees
+  all_pids = find_all_claude_session_pids
+  combined = {}
+  all_pids.each do |pid|
+    get_process_tree(pid).each { |p| combined[p] = true }
+  end
+  log_debug("all_claude_trees: #{all_pids.length} sessions, #{combined.size} total PIDs")
+  combined
+end
+
 # Cleanup orphaned Claude parent sessions
+# Only kills Claude processes that are truly orphaned (PPID=1, re-parented to launchd)
 def cleanup_orphaned_claude_processes
-  my_session_pid = Process.ppid
-  ancestors = get_ancestor_pids(Process.pid)
+  my_ancestors = []
+  current = Process.pid
+  10.times do
+    ppid = `ps -o ppid= -p #{current} 2>/dev/null`.strip.to_i rescue 0
+    break if ppid <= 1
+    my_ancestors << ppid
+    current = ppid
+  end
 
-  log_debug("cleanup: my_session_pid=#{my_session_pid}, ancestors=#{ancestors.inspect}")
+  log_debug("cleanup: my ancestors=#{my_ancestors.inspect}")
 
-  ps_output = `ps aux 2>/dev/null`.lines rescue []
-
+  maps = build_process_maps
   orphans_killed = 0
-  ps_output.each do |line|
-    next unless line.include?('--dangerously-skip-permissions')
-    next if line.include?('grep')
 
-    parts = line.split
-    pid = parts[1].to_i
-    next unless pid.positive?
+  maps[:commands].each do |pid, cmd|
+    next unless cmd.include?('--dangerously-skip-permissions')
+    next if cmd.include?('grep')
+    next if my_ancestors.include?(pid) || pid == Process.pid
 
-    log_debug("cleanup: evaluating PID #{pid}")
-
-    if pid == my_session_pid || ancestors.include?(pid)
-      log_debug("cleanup: SKIP #{pid} (current session or ancestor)")
+    # Only kill if truly orphaned (parent is launchd/init, PID 1)
+    ppid = `ps -o ppid= -p #{pid} 2>/dev/null`.strip.to_i rescue 0
+    unless ppid <= 1
+      log_debug("cleanup: SKIP #{pid} (ppid=#{ppid}, not orphaned)")
       next
     end
 
-    log_debug("cleanup: KILL #{pid}")
+    log_debug("cleanup: KILL #{pid} (orphaned, ppid=1)")
     begin
       Process.kill('KILL', pid)
       orphans_killed += 1
@@ -407,50 +461,39 @@ rescue StandardError => e
 end
 
 # Cleanup orphaned MCP daemon processes
-# Fixed 2026-01-11: Now catches ALL orphaned MCPs, not just detached ones
+# Fixed 2026-02-09: Only kills MCPs not in ANY living Claude session's tree
 def cleanup_orphaned_mcp_daemons
-  my_session_pid = Process.ppid
-  session_tree = get_process_tree(my_session_pid)
-  log_debug("mcp_cleanup: session_tree size=#{session_tree.size}")
+  all_trees = get_all_claude_trees
 
-  # Comprehensive list of MCP patterns - add new MCPs here as needed
+  # Comprehensive list of MCP patterns
   mcp_patterns = [
-    # claude-mem plugin
-    'chroma-mcp',
-    'worker-service.cjs',
-    'mcp-server.cjs',
-    # Standard MCPs (both npm and local dev paths)
-    'mcpbridge',                # Xcode official MCP bridge
-    'context7-mcp',
-    'apple-docs-mcp',
-    'mcp-server-github',
-    'server-memory',            # @modelcontextprotocol/server-memory
-    'macos-automator',          # @steipete/macos-automator-mcp
-    'serena',                   # Serena MCP
-    # Generic catch-all for npm-spawned MCPs
-    'npx/.*/mcp'
+    'chroma-mcp', 'worker-service.cjs', 'mcp-server.cjs',
+    'mcpbridge', 'context7-mcp', 'apple-docs-mcp',
+    'mcp-server-github', 'server-memory', 'macos-automator',
+    'serena', 'nvidia_mcp_server'
   ]
+  mcp_regex_patterns = ['npx/.*/mcp']
 
-  ps_output = `ps aux 2>/dev/null`.lines rescue []
+  maps = build_process_maps
   daemons_killed = 0
 
-  ps_output.each do |line|
-    # REMOVED: next unless line.include?('??')  # Was only catching detached processes
-    # Now catches ALL orphaned MCPs regardless of TTY attachment
+  maps[:commands].each do |pid, cmd|
+    matched = mcp_patterns.find { |p| cmd.include?(p) }
+    matched ||= mcp_regex_patterns.find { |p| cmd.match?(Regexp.new(p)) }
+    next unless matched
 
-    matched_pattern = mcp_patterns.find { |p| line.include?(p) || line.match?(Regexp.new(p)) }
-    next unless matched_pattern
-
-    parts = line.split
-    pid = parts[1].to_i
-    next unless pid.positive?
-
-    if session_tree.include?(pid)
-      log_debug("mcp_cleanup: SKIP #{pid} (#{matched_pattern}) - part of current session")
+    if all_trees[pid]
+      log_debug("mcp_cleanup: SKIP #{pid} (#{matched}) - belongs to a living session")
       next
     end
 
-    log_debug("mcp_cleanup: KILL #{pid} (#{matched_pattern})")
+    # Double-check: walk ancestors to find a living Claude parent
+    if has_living_claude_ancestor?(pid)
+      log_debug("mcp_cleanup: SKIP #{pid} (#{matched}) - has living Claude ancestor")
+      next
+    end
+
+    log_debug("mcp_cleanup: KILL #{pid} (#{matched}) - truly orphaned")
     begin
       Process.kill('KILL', pid)
       daemons_killed += 1
@@ -467,29 +510,28 @@ rescue StandardError => e
 end
 
 # Cleanup orphaned Claude subagents (Task tool agents with --resume)
+# Only kills subagents not in ANY living Claude session's tree
 def cleanup_orphaned_subagents
-  my_session_pid = Process.ppid
-  session_tree = get_process_tree(my_session_pid)
-  log_debug("subagent_cleanup: session_tree size=#{session_tree.size}")
-
-  ps_output = `ps aux 2>/dev/null`.lines rescue []
+  all_trees = get_all_claude_trees
+  maps = build_process_maps
   subagents_killed = 0
 
-  ps_output.each do |line|
-    next unless line.include?('claude') && line.include?('--resume')
-    next if line.include?('--dangerously-skip-permissions')  # Parent session
-    next if line.include?('grep')
+  maps[:commands].each do |pid, cmd|
+    next unless cmd.include?('claude') && cmd.include?('--resume')
+    next if cmd.include?('--dangerously-skip-permissions')
+    next if cmd.include?('grep')
 
-    parts = line.split
-    pid = parts[1].to_i
-    next unless pid.positive?
-
-    if session_tree.include?(pid)
-      log_debug("subagent_cleanup: SKIP #{pid} - part of current session")
+    if all_trees[pid]
+      log_debug("subagent_cleanup: SKIP #{pid} - belongs to a living session")
       next
     end
 
-    log_debug("subagent_cleanup: KILL #{pid}")
+    if has_living_claude_ancestor?(pid)
+      log_debug("subagent_cleanup: SKIP #{pid} - has living Claude ancestor")
+      next
+    end
+
+    log_debug("subagent_cleanup: KILL #{pid} - truly orphaned")
     begin
       Process.kill('KILL', pid)
       subagents_killed += 1

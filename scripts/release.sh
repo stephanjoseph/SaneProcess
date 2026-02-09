@@ -653,9 +653,21 @@ log_info "Version: ${VERSION} (${BUILD_NUMBER})"
 DMG_NAME="${APP_NAME}-${VERSION}"
 DMG_PATH="${BUILD_DIR}/${DMG_NAME}.dmg"
 
+# Generate DMG background (ensures icons are visible in Finder dark mode)
+DMG_BG_OUTPUT="${BUILD_DIR}/dmg_background.png"
 if [ -n "${DMG_BACKGROUND_GENERATOR}" ] && [ -f "${DMG_BACKGROUND_GENERATOR}" ]; then
-    log_info "Generating DMG background..."
-    swift "${DMG_BACKGROUND_GENERATOR}"
+    log_info "Generating DMG background (custom generator)..."
+    swift "${DMG_BACKGROUND_GENERATOR}" "${DMG_BG_OUTPUT}" ${DMG_WINDOW_SIZE}
+    [ -f "${DMG_BG_OUTPUT}" ] && DMG_BACKGROUND="${DMG_BG_OUTPUT}"
+elif [ -z "${DMG_BACKGROUND}" ]; then
+    # Auto-generate a default light background so icons are visible in dark mode
+    SANEPROCESS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    DEFAULT_BG_GEN="${SANEPROCESS_DIR}/scripts/generate_dmg_background.swift"
+    if [ -f "${DEFAULT_BG_GEN}" ]; then
+        log_info "Generating default DMG background..."
+        swift "${DEFAULT_BG_GEN}" "${DMG_BG_OUTPUT}" ${DMG_WINDOW_SIZE}
+        [ -f "${DMG_BG_OUTPUT}" ] && DMG_BACKGROUND="${DMG_BG_OUTPUT}"
+    fi
 fi
 
 # Remove old DMG if it exists (create-dmg won't overwrite)
@@ -711,6 +723,28 @@ else
         -ov -format UDZO \
         "${DMG_PATH}"
     remove_path "${DMG_TEMP}"
+fi
+
+# Fix Applications folder icon inside the DMG (symlinks lose icons on macOS 14+)
+FIX_APPS_ICON_SCRIPT="${SANEPROCESS_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}/scripts/fix_dmg_apps_icon.swift"
+if [ -f "${FIX_APPS_ICON_SCRIPT}" ]; then
+    log_info "Fixing Applications icon in DMG..."
+    DMG_RW="${BUILD_DIR}/${DMG_NAME}_rw.dmg"
+    hdiutil convert "${DMG_PATH}" -format UDRW -o "${DMG_RW}" -quiet
+    MOUNT_OUTPUT=$(hdiutil attach "${DMG_RW}" -readwrite -nobrowse -quiet 2>&1)
+    MOUNT_POINT="/Volumes/${APP_NAME}"
+    if [ -d "${MOUNT_POINT}" ]; then
+        swift "${FIX_APPS_ICON_SCRIPT}" "${MOUNT_POINT}" || true
+        sleep 1
+        hdiutil detach "${MOUNT_POINT}" -quiet -force 2>/dev/null
+        rm -f "${DMG_PATH}"
+        hdiutil convert "${DMG_RW}" -format UDZO -o "${DMG_PATH}" -quiet
+        rm -f "${DMG_RW}"
+        log_info "Applications icon fixed"
+    else
+        log_warn "Could not mount DMG for icon fix (non-fatal)"
+        rm -f "${DMG_RW}"
+    fi
 fi
 
 # Set DMG file icon (for Finder)
