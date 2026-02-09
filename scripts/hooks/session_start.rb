@@ -638,6 +638,35 @@ rescue StandardError => e
   log_debug "Sales infrastructure check error: #{e.message}"
 end
 
+# === MODEL ROUTING SYNC ===
+# Pull latest model_routing.json from Mini if it's newer than local copy.
+# Non-blocking: 3s SSH timeout. If Mini is asleep or unreachable, skip silently.
+ROUTING_LOCAL = File.expand_path('~/SaneApps/infra/outputs/model_routing.json')
+ROUTING_REMOTE = 'mini:~/SaneApps/infra/outputs/model_routing.json'
+
+def sync_model_routing
+  # Skip if local file is fresh (updated today)
+  if File.exist?(ROUTING_LOCAL)
+    local_age_hours = (Time.now - File.mtime(ROUTING_LOCAL)) / 3600.0
+    if local_age_hours < 24
+      log_debug "model_routing: local file is #{local_age_hours.round(1)}h old, skipping sync"
+      return
+    end
+  end
+
+  # Try SCP with short timeout (Mini may be asleep)
+  result = `scp -o ConnectTimeout=3 -o BatchMode=yes #{ROUTING_REMOTE} #{ROUTING_LOCAL} 2>&1`
+  status = $?.success?
+
+  if status
+    warn '🔄 Synced model_routing.json from Mini'
+  else
+    log_debug "model_routing sync skipped: #{result.strip}"
+  end
+rescue StandardError => e
+  log_debug "Model routing sync error: #{e.message}"
+end
+
 # === STARTUP GATE INITIALIZATION ===
 # Sets up the gate that blocks substantive work until startup steps complete.
 # Auto-completes steps where required files don't exist (cross-project safety).
@@ -820,6 +849,10 @@ begin
   # Check sales infrastructure health (link monitor state)
   check_sales_infrastructure
   log_debug "check_sales_infrastructure done"
+
+  # Sync model routing from Mini (non-blocking, 3s timeout)
+  sync_model_routing
+  log_debug "sync_model_routing done"
 
   # Output JSON to stdout for Claude Code to inject into context
   # Must use hookSpecificOutput format for SessionStart hooks

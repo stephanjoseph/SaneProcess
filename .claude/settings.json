@@ -37,17 +37,6 @@
       "mcp__nvidia-build__*"
     ]
   },
-  "enabledPlugins": {
-    "swift-lsp@claude-plugins-official": true,
-    "code-review@claude-plugins-official": true,
-    "security-guidance@claude-plugins-official": true,
-    "claude-mem@thedotmack": true,
-    "frontend-design@claude-plugins-official": true,
-    "context7@claude-plugins-official": true,
-    "feature-dev@claude-plugins-official": true,
-    "serena@claude-plugins-official": true,
-    "hookify@claude-plugins-official": true
-  },
   "hooks": {
     "SessionStart": [
       {
@@ -78,6 +67,16 @@
             "type": "command",
             "command": "[ -n \"$CLAUDE_CODE\" ] && [ -f .saneprocess ] && ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sanetools.rb || true",
             "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sane_launch_guard.rb",
+            "timeout": 3
           }
         ]
       }
@@ -136,5 +135,16 @@
         ]
       }
     ]
+  },
+  "enabledPlugins": {
+    "swift-lsp@claude-plugins-official": true,
+    "code-review@claude-plugins-official": true,
+    "security-guidance@claude-plugins-official": true,
+    "claude-mem@thedotmack": true,
+    "frontend-design@claude-plugins-official": true,
+    "context7@claude-plugins-official": true,
+    "feature-dev@claude-plugins-official": true,
+    "serena@claude-plugins-official": true,
+    "hookify@claude-plugins-official": true
   }
 }
