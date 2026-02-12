@@ -894,10 +894,13 @@ if [ "${APPSTORE_ENABLED}" = "true" ]; then
 
     APPSTORE_PKG="${APPSTORE_EXPORT_PATH}/${APP_NAME}.pkg"
     if [ ! -f "${APPSTORE_PKG}" ]; then
-        log_error "App Store export failed — no .pkg produced"
-        exit 1
+        # With destination=upload, xcodebuild uploads directly — no local .pkg
+        log_info "No local .pkg (direct upload via destination=upload)"
+        APPSTORE_DIRECT_UPLOAD=true
+    else
+        log_info "App Store artifact: ${APPSTORE_PKG}"
+        APPSTORE_DIRECT_UPLOAD=false
     fi
-    log_info "App Store artifact: ${APPSTORE_PKG}"
 
     # Dylib preflight: verify no missing dynamic library references
     # This catches the Sparkle-not-stripped class of crash before we upload to ASC
@@ -1155,17 +1158,20 @@ APPCASTEOF
             exit 1
         fi
 
-        if [ -z "${APPSTORE_PKG}" ] || [ ! -f "${APPSTORE_PKG}" ]; then
+        if [ "${APPSTORE_DIRECT_UPLOAD}" = "true" ]; then
+            log_info "Build was uploaded directly during export (destination=upload)."
+            log_info "Skipping appstore_submit.rb upload — build is already on App Store Connect."
+        elif [ -z "${APPSTORE_PKG}" ] || [ ! -f "${APPSTORE_PKG}" ]; then
             log_error "No App Store .pkg found. Build with App Store export first (don't use --skip-build)."
             exit 1
+        else
+            ruby "${APPSTORE_SCRIPT}" \
+                --pkg "${APPSTORE_PKG}" \
+                --app-id "${APPSTORE_APP_ID}" \
+                --version "${VERSION}" \
+                --platform macos \
+                --project-root "${PROJECT_ROOT}"
         fi
-
-        ruby "${APPSTORE_SCRIPT}" \
-            --pkg "${APPSTORE_PKG}" \
-            --app-id "${APPSTORE_APP_ID}" \
-            --version "${VERSION}" \
-            --platform macos \
-            --project-root "${PROJECT_ROOT}"
 
         # iOS build and submission (if configured)
         if echo "${APPSTORE_PLATFORMS}" | grep -q "ios"; then
