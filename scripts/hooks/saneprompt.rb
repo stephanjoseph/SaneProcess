@@ -692,8 +692,7 @@ def process_prompt(prompt)
   # 7. Get learned patterns from previous sessions
   learned_patterns = get_learned_patterns
 
-  # 7. Memory staging removed (Jan 2026) - memory MCP no longer exists
-  # Memory learnings now auto-captured by Sane-Mem (localhost:37777)
+  # 7. Memory staging removed — learnings captured via session_learnings.jsonl
   memory_staging = nil
 
   # === END INTELLIGENCE ===
@@ -712,8 +711,7 @@ def process_prompt(prompt)
     warn ''
   end
 
-  # NOTE: Memory staging output removed (Jan 2026) - memory MCP no longer exists
-  # Memory learnings now auto-captured by Sane-Mem (localhost:37777)
+  # Memory staging output removed — learnings captured via session_learnings.jsonl
 
   # Output context to Claude (stdout)
   output_context(prompt_type, rules, triggers, prompt, frustrations, detected_reqs, learning_warning, learned_patterns, memory_staging)

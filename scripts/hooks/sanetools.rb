@@ -37,7 +37,6 @@ RESEARCH_TOOLS = %w[Read Grep Glob WebSearch WebFetch Task].freeze
 # === INTELLIGENCE: Bootstrap Whitelist ===
 # These tools ALWAYS allowed to prevent circular blocking
 # CRITICAL: Categorize by DAMAGE POTENTIAL, not by name!
-# NOTE: Memory MCP removed Jan 2026 - using Sane-Mem (localhost:37777) instead
 BOOTSTRAP_TOOL_PATTERN = Regexp.union(
   /^Read$/,
   /^Grep$/,
@@ -53,10 +52,8 @@ BOOTSTRAP_TOOL_PATTERN = Regexp.union(
 ).freeze
 
 # === MUTATION PATTERNS (require research) ===
-# NOTE: Memory MCP patterns removed Jan 2026 - using Sane-Mem (localhost:37777) instead
-# GLOBAL_MUTATION_PATTERN is empty now but kept for API compatibility
-
-GLOBAL_MUTATION_PATTERN = /(?!)/.freeze  # Matches nothing (memory MCP removed)
+# GLOBAL_MUTATION_PATTERN is empty — no global mutation tools to gate
+GLOBAL_MUTATION_PATTERN = /(?!)/.freeze  # Matches nothing
 
 EXTERNAL_MUTATION_PATTERN = Regexp.union(
   /^mcp__github__create_/,
@@ -124,8 +121,6 @@ BASH_FILE_WRITE_PATTERN = Regexp.union(
 EDIT_KEYWORDS = %w[edit write create modify change update add remove delete fix patch].freeze
 
 # === RESEARCH CATEGORIES ===
-# NOTE: Memory category removed Jan 2026 - using Sane-Mem (localhost:37777) for auto-capture
-
 RESEARCH_CATEGORIES = {
   docs: {
     tools: %w[mcp__apple-docs__* mcp__context7__*],

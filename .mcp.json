@@ -36,10 +36,6 @@
         "ENABLE_TOOL_SEARCH": "true"
       }
     },
-    "mcp-search": {
-      "type": "stdio",
-      "command": "/Users/sj/.claude/plugins/cache/thedotmack/claude-mem/9.0.6/scripts/mcp-server.cjs"
-    },
     "openaiDeveloperDocs": {
       "type": "http",
       "url": "https://developers.openai.com/mcp"
@@ -49,6 +45,15 @@
       "args": [
         "mcpbridge"
       ]
+    },
+    "memory": {
+      "command": "node",
+      "args": [
+        "/Users/sj/.npm-global/lib/node_modules/@modelcontextprotocol/server-memory/dist/index.js"
+      ],
+      "env": {
+        "MEMORY_FILE_PATH": "/Users/sj/.claude/memory/knowledge-graph.jsonl"
+      }
     },
     "nvidia-build": {
       "command": "/Users/sj/.local/share/nvidia-mcp-venv/bin/python3",

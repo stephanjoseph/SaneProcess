@@ -976,10 +976,10 @@ class ValidationReport
       end
     end
 
-    # Check Sane-Mem is running (local knowledge store)
-    sanemem_check = `curl -s -o /dev/null -w "%{http_code}" "http://localhost:37777/health" 2>/dev/null`
-    if sanemem_check.strip != '200'
-      warnings_found << "Sane-Mem service not running (learnings not being captured)"
+    # Check knowledge graph exists (official Memory MCP)
+    kg_path = File.expand_path('~/.claude/memory/knowledge-graph.jsonl')
+    unless File.exist?(kg_path)
+      warnings_found << "Knowledge graph missing at #{kg_path} (Memory MCP not seeded)"
     end
 
     @metrics[:support_infrastructure] = {
