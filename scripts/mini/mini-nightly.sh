@@ -177,9 +177,19 @@ for app_dir in "$APPS_DIR"/Sane*; do
 
   cd "$app_dir" || continue
 
-  # Check if tests exist
+  # Check if tests exist — prefer SPM package tests (reliable on headless Mini)
   TEST_TYPE=""
-  if ls *.xcodeproj 1>/dev/null 2>&1; then
+  SPM_PKG_DIR=""
+  # Check for local SPM packages with tests (e.g. SaneHostsPackage/Tests/)
+  for pkg_dir in "${app_name}Package" "Package"; do
+    if [ -f "$pkg_dir/Package.swift" ] && [ -d "$pkg_dir/Tests" ]; then
+      SPM_PKG_DIR="$pkg_dir"
+      TEST_TYPE="spm_local"
+      break
+    fi
+  done
+  # Fall back to xcodeproj tests (skip UI tests on headless Mini)
+  if [ -z "$TEST_TYPE" ] && ls *.xcodeproj 1>/dev/null 2>&1; then
     proj=$(ls -d *.xcodeproj | head -1)
     ws=""
     if ls *.xcworkspace 1>/dev/null 2>&1; then
@@ -193,7 +203,7 @@ for app_dir in "$APPS_DIR"/Sane*; do
     if [ -n "$SCHEME" ]; then
       TEST_TYPE="xcode"
     fi
-  elif [ -f "Package.swift" ]; then
+  elif [ -z "$TEST_TYPE" ] && [ -f "Package.swift" ]; then
     TEST_TYPE="spm"
   fi
 
@@ -201,10 +211,18 @@ for app_dir in "$APPS_DIR"/Sane*; do
 
   echo "### $app_name" >> "$REPORT"
 
-  if [ "$TEST_TYPE" = "xcode" ]; then
+  if [ "$TEST_TYPE" = "spm_local" ]; then
+    # Run swift test in local SPM package directory (reliable on headless Mini)
+    test_output=$(cd "$SPM_PKG_DIR" && swift test 2>&1)
+  elif [ "$TEST_TYPE" = "xcode" ]; then
     TEST_TARGET_FLAG="-project $proj"
     [ -n "$ws" ] && TEST_TARGET_FLAG="-workspace $ws"
-    test_output=$(xcodebuild $TEST_TARGET_FLAG -scheme "$SCHEME" test -quiet -destination 'platform=macOS' CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO 2>&1)
+    # Skip UI tests on headless Mini — they require a GUI and hang indefinitely
+    SKIP_FLAGS=""
+    for ui_target in $(echo "$ALL_SCHEMES" | grep -i "UITest"); do
+      SKIP_FLAGS="$SKIP_FLAGS -skip-testing:${ui_target}"
+    done
+    test_output=$(xcodebuild $TEST_TARGET_FLAG -scheme "$SCHEME" test $SKIP_FLAGS -quiet -destination 'platform=macOS' CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO 2>&1)
   else
     test_output=$(swift test 2>&1)
   fi
