@@ -299,11 +299,14 @@ module SaneMasterModules
       # 2b. Entitlements file
       print '  │ Entitlements... '
       entitlements = Dir.glob('**/*.entitlements').reject { |p| p.include?('DerivedData') || p.include?('build/') }
-      if entitlements.any?
-        ent_content = File.read(entitlements.first) rescue ''
+      # For App Store preflight, prefer the AppStore-specific entitlements file
+      appstore_ent = entitlements.find { |p| p =~ /appstore/i }
+      target_ent = appstore_ent || entitlements.first
+      if target_ent
+        ent_content = File.read(target_ent) rescue ''
         has_sandbox = ent_content.include?('com.apple.security.app-sandbox')
         has_hardened = true # Hardened runtime is in build settings, not entitlements
-        puts "✅ #{entitlements.first}"
+        puts "✅ #{target_ent}"
         unless has_sandbox
           puts '  │   ⚠️  No App Sandbox entitlement (required for MAS)'
           warnings << "No com.apple.security.app-sandbox in entitlements — required for Mac App Store"
