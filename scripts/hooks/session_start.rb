@@ -456,6 +456,62 @@ def cleanup_orphaned_claude_processes
   if orphans_killed.positive?
     warn "🧹 Cleaned up #{orphans_killed} orphaned Claude session#{orphans_killed == 1 ? '' : 's'}"
   end
+
+  # Detect stale sessions in other terminals (not orphaned, but old)
+  # >24h = auto-kill (almost certainly accidental), 6-24h = warn
+  stale_warned = []
+  stale_killed = 0
+  maps[:commands].each do |pid, cmd|
+    next unless cmd.include?('--dangerously-skip-permissions')
+    next if cmd.include?('grep')
+    next if my_ancestors.include?(pid) || pid == Process.pid
+
+    ppid = `ps -o ppid= -p #{pid} 2>/dev/null`.strip.to_i rescue 0
+    next if ppid <= 1 # Already handled above as orphan
+
+    # Check how old this process is
+    elapsed = `ps -o etime= -p #{pid} 2>/dev/null`.strip rescue ''
+    next if elapsed.empty?
+
+    # Parse etime format: [[dd-]hh:]mm:ss
+    parts = elapsed.split(/[-:]/).map(&:to_i)
+    total_hours = case parts.length
+                  when 4 then parts[0] * 24 + parts[1] # dd-hh:mm:ss
+                  when 3 then parts[0]                   # hh:mm:ss
+                  else 0                                  # mm:ss
+                  end
+
+    tty = `ps -o tty= -p #{pid} 2>/dev/null`.strip rescue '?'
+
+    if total_hours >= 24
+      # Auto-kill: >24h is almost certainly accidental
+      log_debug("cleanup: KILL stale session #{pid} (#{total_hours}h old, tty=#{tty})")
+      begin
+        Process.kill('TERM', pid)
+        sleep 0.5
+        Process.kill('KILL', pid) if process_alive?(pid)
+        stale_killed += 1
+      rescue Errno::ESRCH, Errno::EPERM => e
+        log_debug("cleanup: failed to kill stale #{pid}: #{e.message}")
+      end
+    elsif total_hours >= 6
+      stale_warned << { pid: pid, hours: total_hours, tty: tty }
+    end
+  end
+
+  if stale_killed.positive?
+    warn "🧹 Auto-killed #{stale_killed} stale Claude session#{stale_killed == 1 ? '' : 's'} (>24h old)"
+  end
+
+  if stale_warned.any?
+    warn ''
+    warn "⚠️  STALE CLAUDE SESSIONS (#{stale_warned.length}):"
+    stale_warned.each do |s|
+      warn "   PID #{s[:pid]} — running #{s[:hours]}h — terminal #{s[:tty]}"
+    end
+    warn '   Close them to free resources. To kill: kill <PID>'
+    warn ''
+  end
 rescue StandardError => e
   log_debug("Orphan cleanup error: #{e.class}: #{e.message}")
 end
@@ -549,6 +605,23 @@ end
 
 
 # === SALES INFRASTRUCTURE CHECK ===
+# Launch Xcode if the project has an .xcodeproj and Xcode isn't running.
+# The Xcode MCP server requires Xcode to be open.
+def launch_xcode_if_needed
+  xcodeproj = Dir.glob(File.join(PROJECT_DIR, '*.xcodeproj')).first
+  return unless xcodeproj
+
+  running = system('pgrep -x Xcode >/dev/null 2>&1')
+  if running
+    log_debug "Xcode already running"
+  else
+    system('open', '-a', 'Xcode', xcodeproj)
+    warn "🔨 Launched Xcode with #{File.basename(xcodeproj)}"
+  end
+rescue StandardError => e
+  log_debug "launch_xcode error: #{e.message}"
+end
+
 # Read link monitor state and alert if checkout links are broken
 LINK_MONITOR_STATE = File.expand_path('~/SaneApps/infra/SaneProcess/outputs/link_monitor_state.json')
 
@@ -791,6 +864,10 @@ begin
   show_mcp_verification_status # Show MCP status and prompt
   log_debug "show_mcp_verification_status done"
   log_debug "session learnings briefing loaded (replaces claude-mem)"
+
+  # Launch Xcode if project has .xcodeproj and Xcode isn't running
+  launch_xcode_if_needed
+  log_debug "launch_xcode_if_needed done"
 
   # Check sales infrastructure health (link monitor state)
   check_sales_infrastructure
