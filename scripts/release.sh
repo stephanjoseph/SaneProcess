@@ -1172,9 +1172,31 @@ APPCASTEOF
         log_warn "Run with USE_SPARKLE=true and ensure EdDSA key is in Keychain."
     fi
 
+    # Step 2.5: Auto-update website download links to current version
+    # Prevents stale download URLs (v1.5.0 link shipped with v2.1.0 — never again)
+    DOCS_DIR="${PROJECT_ROOT}/docs"
+    WEBSITE_DIR="${PROJECT_ROOT}/website"
+    DOWNLOAD_URL="https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip"
+
+    for SITE_DIR in "${DOCS_DIR}" "${WEBSITE_DIR}"; do
+        INDEX_HTML="${SITE_DIR}/index.html"
+        if [ -f "${INDEX_HTML}" ]; then
+            # Replace any old download links (SaneBar-X.Y.Z.zip) with current version
+            OLD_LINKS=$(grep -c "${APP_NAME}-[0-9].*\.zip" "${INDEX_HTML}" 2>/dev/null || echo 0)
+            if [ "${OLD_LINKS}" -gt 0 ]; then
+                sed -i '' "s|${APP_NAME}-[0-9][0-9]*\.[0-9][0-9]*\(\.[0-9][0-9]*\)\{0,1\}\.zip|${APP_NAME}-${VERSION}.zip|g" "${INDEX_HTML}"
+                log_info "Updated ${OLD_LINKS} download link(s) in $(basename "${SITE_DIR}")/index.html → ${APP_NAME}-${VERSION}.zip"
+            fi
+            # Update softwareVersion in JSON-LD structured data
+            if grep -q '"softwareVersion"' "${INDEX_HTML}" 2>/dev/null; then
+                sed -i '' "s|\"softwareVersion\": \"[^\"]*\"|\"softwareVersion\": \"${VERSION}\"|g" "${INDEX_HTML}"
+                log_info "Updated softwareVersion in $(basename "${SITE_DIR}")/index.html → ${VERSION}"
+            fi
+        fi
+    done
+
     # Step 3: Deploy website + appcast to Cloudflare Pages
     PAGES_PROJECT="${LOWER_APP_NAME}-site"
-    DOCS_DIR="${PROJECT_ROOT}/docs"
     if [ -d "${DOCS_DIR}" ]; then
         log_info "Deploying website + appcast to Cloudflare Pages (${PAGES_PROJECT})..."
         npx wrangler pages deploy "${DOCS_DIR}" \
@@ -1329,14 +1351,37 @@ APPCASTEOF
         fi
     fi
 
-    # Step 9: Remind about email webhook product config
-    # The email webhook has hardcoded product→filename mappings for purchase download links.
-    # File: infra/sane-email-automation/src/handlers/webhook-lemonsqueezy.js (PRODUCT_CONFIG)
-    log_warn ""
-    log_warn "ACTION REQUIRED: Update email webhook PRODUCT_CONFIG with new version!"
-    log_warn "  File: ~/SaneApps/infra/sane-email-automation/src/handlers/webhook-lemonsqueezy.js"
-    log_warn "  Set ${APP_NAME} entry to: { file: '${APP_NAME}-${VERSION}.zip', domain: '${DIST_HOST}' }"
-    log_warn "  Then deploy: cd ~/SaneApps/infra/sane-email-automation && npx wrangler deploy --keep-vars"
+    # Step 9: Auto-update email webhook product config
+    # The email webhook has product→filename mappings for purchase download links.
+    # Previously this was a manual reminder — now it's automated for ALL apps.
+    WEBHOOK_JS="${HOME}/SaneApps/infra/sane-email-automation/src/handlers/webhook-lemonsqueezy.js"
+    if [ -f "${WEBHOOK_JS}" ]; then
+        # Match: 'AppName': { file: 'AppName-X.Y.Z.zip', ... } or .dmg
+        OLD_ENTRY=$(grep "'${APP_NAME}'" "${WEBHOOK_JS}" 2>/dev/null || true)
+        if [ -n "${OLD_ENTRY}" ]; then
+            # Determine extension from current entry (zip or dmg)
+            CURRENT_EXT=$(echo "${OLD_ENTRY}" | grep -o '\.\(zip\|dmg\)' | head -1)
+            CURRENT_EXT="${CURRENT_EXT:-.zip}"
+            sed -i '' "s|'${APP_NAME}': { file: '${APP_NAME}-[^']*'|'${APP_NAME}': { file: '${APP_NAME}-${VERSION}${CURRENT_EXT}'|" "${WEBHOOK_JS}"
+            log_info "Updated email webhook: ${APP_NAME} → ${APP_NAME}-${VERSION}${CURRENT_EXT}"
+
+            # Commit and deploy
+            WEBHOOK_DIR="$(dirname "$(dirname "$(dirname "${WEBHOOK_JS}")")")"
+            if cd "${WEBHOOK_DIR}" 2>/dev/null; then
+                git add -A && git commit -m "chore: update ${LOWER_APP_NAME} to ${VERSION}" --no-verify 2>/dev/null && \
+                    git push 2>/dev/null && \
+                    log_info "Webhook committed and pushed."
+                npx wrangler deploy --keep-vars 2>/dev/null && \
+                    log_info "Webhook deployed to Cloudflare Workers." || \
+                    log_warn "Webhook deploy failed — deploy manually: cd ${WEBHOOK_DIR} && npx wrangler deploy --keep-vars"
+                cd "${PROJECT_ROOT}"
+            fi
+        else
+            log_warn "No '${APP_NAME}' entry found in webhook — add it manually to ${WEBHOOK_JS}"
+        fi
+    else
+        log_warn "Email webhook file not found at ${WEBHOOK_JS} — update PRODUCT_CONFIG manually"
+    fi
 
     log_info ""
     log_info "═══════════════════════════════════════════"
