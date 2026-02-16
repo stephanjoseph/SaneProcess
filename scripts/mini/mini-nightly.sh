@@ -132,6 +132,12 @@ for app_dir in "$APPS_DIR"/Sane*; do
 
   echo "### $app_name" >> "$REPORT"
 
+  # Clean stale Runner.app bundles — macOS 26 protects registered .app bundles,
+  # causing EPERM when the linker tries to overwrite them on subsequent builds
+  for runner in ~/Library/Developer/Xcode/DerivedData/"${app_name}"-*/Build/Products/Debug/*-Runner.app; do
+    [ -e "$runner" ] && rm -rf "$runner"
+  done
+
   build_start=$(date +%s)
   if [ "$BUILD_TYPE" = "xcode" ]; then
     BUILD_TARGET_FLAG="-project $proj"
