@@ -403,6 +403,7 @@ module SaneMasterModules
       {
         status: blocking_issues > TEST_QUALITY_WARN ? :warning : :ok,
         issues: issues,
+        count: blocking_issues + advisory_issues,
         blocking_count: blocking_issues,
         advisory_count: advisory_issues
       }
