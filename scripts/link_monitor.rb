@@ -107,16 +107,16 @@ def check_appcast_and_download(appcast_url, name)
     return { status: :error, message: "Appcast is not valid XML" }
   end
 
-  # Extract latest DMG enclosure URL
-  dmg_url_match = xml_content.scan(/url="([^"]+\.dmg[^"]*)"/).flatten.first
-  return { status: :error, message: "No DMG enclosure found in appcast" } unless dmg_url_match
+  # Extract latest Sparkle enclosure URL (ZIP/DMG/PKG supported)
+  enclosure_url = xml_content.scan(/<enclosure[^>]*url="([^"]+)"/i).flatten.first
+  return { status: :error, message: "No enclosure URL found in appcast" } unless enclosure_url
 
-  # Check if the DMG URL is accessible
-  dmg_result = check_url(dmg_url_match)
-  if dmg_result[:status] == :error
-    { status: :error, message: "DMG URL broken: #{dmg_url_match} (#{dmg_result[:message]})" }
+  # Check if the enclosure URL is accessible
+  enclosure_result = check_url(enclosure_url)
+  if enclosure_result[:status] == :error
+    { status: :error, message: "Enclosure URL broken: #{enclosure_url} (#{enclosure_result[:message]})" }
   else
-    { status: :ok, dmg_url: dmg_url_match }
+    { status: :ok, enclosure_url: enclosure_url }
   end
 rescue StandardError => e
   { status: :error, message: "Parse error: #{e.message}" }
@@ -260,7 +260,7 @@ CRITICAL_URLS.each do |name, url|
     result = check_appcast_and_download(url, name)
     if result[:status] == :ok
       successes << name
-      log "OK  #{name} (XML valid, DMG accessible: #{result[:dmg_url]})"
+      log "OK  #{name} (XML valid, enclosure accessible: #{result[:enclosure_url]})"
     else
       failures << { name: name, url: url, error: result[:message] }
       log "FAIL #{name}: #{result[:message]} — #{url}"
