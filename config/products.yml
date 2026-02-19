@@ -3,6 +3,9 @@
 # When a UUID, domain, or slug changes, update HERE — everything reads from this file.
 #
 # Used by: link_monitor.rb, validation_report.rb, morning-report.sh, sane-checkout Worker
+# NOTE:
+# - checkout_uuid present = product is live, include in critical link monitoring
+# - checkout_uuid missing = unreleased, skip checkout/redirect/appcast checks
 
 products:
   sanebar:
@@ -39,6 +42,7 @@ products:
 
   sanesync:
     name: SaneSync
+    # Unreleased: no checkout UUID yet
     domain: sanesync.com
     dist_domain: dist.sanesync.com
     github_repo: sane-apps/SaneSync
@@ -46,6 +50,7 @@ products:
 
   sanevideo:
     name: SaneVideo
+    # Unreleased: no checkout UUID yet
     domain: sanevideo.com
     dist_domain: dist.sanevideo.com
     github_repo: sane-apps/SaneVideo

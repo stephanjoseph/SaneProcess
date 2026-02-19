@@ -30,7 +30,13 @@ REDIRECT = CONFIG.fetch("redirect")
 # Build critical URLs dynamically from config
 CRITICAL_URLS = {}.tap do |urls|
   PRODUCTS.each do |slug, product|
-    urls["#{product['name']} checkout"] = "#{STORE['checkout_base']}/#{product['checkout_uuid']}"
+    # Only monitor release links for products that are actually live.
+    # Products without checkout_uuid are not public yet.
+    checkout_uuid = product["checkout_uuid"].to_s.strip
+    monitor_links = product.fetch("monitor_links", true)
+    next if checkout_uuid.empty? || monitor_links == false
+
+    urls["#{product['name']} checkout"] = "#{STORE['checkout_base']}/#{checkout_uuid}"
     urls[product["domain"]] = "https://#{product['domain']}"
     urls["#{product['name']} redirect"] = "#{REDIRECT['base_url']}/#{slug}"
     urls["#{product['name']} appcast"] = product["appcast"]
@@ -51,33 +57,48 @@ WEBSITE_DIRS = %w[
 TIMEOUT = 10
 MAX_REDIRECTS = 3
 
-def check_url(url, max_redirects: MAX_REDIRECTS)
-  uri = URI.parse(url)
-  redirects = 0
+def check_url(url, max_redirects: MAX_REDIRECTS, attempts: 3)
+  attempts.times do |attempt|
+    begin
+      uri = URI.parse(url)
+      redirects = 0
 
-  loop do
-    http = Net::HTTP.new(uri.host, uri.port)
-    http.use_ssl = (uri.scheme == "https")
-    http.open_timeout = TIMEOUT
-    http.read_timeout = TIMEOUT
+      loop do
+        http = Net::HTTP.new(uri.host, uri.port)
+        http.use_ssl = (uri.scheme == "https")
+        http.open_timeout = TIMEOUT
+        http.read_timeout = TIMEOUT
 
-    response = http.request_head(uri.request_uri)
-    code = response.code.to_i
+        response = http.request_head(uri.request_uri)
+        code = response.code.to_i
 
-    if [301, 302, 303, 307, 308].include?(code)
-      redirects += 1
-      return { status: :error, code: code, message: "Too many redirects" } if redirects > max_redirects
-      uri = URI.parse(response["location"])
-      next
+        if [301, 302, 303, 307, 308].include?(code)
+          redirects += 1
+          return { status: :error, code: code, message: "Too many redirects" } if redirects > max_redirects
+          uri = URI.parse(response["location"])
+          next
+        end
+
+        return { status: :ok, code: code } if code >= 200 && code < 400
+
+        # Transient server errors are common during deploy propagation.
+        if code >= 500 && attempt < attempts - 1
+          sleep(0.4 * (attempt + 1))
+          break
+        end
+
+        return { status: :error, code: code, message: "HTTP #{code}" }
+      end
+    rescue Net::OpenTimeout, Net::ReadTimeout => e
+      return { status: :error, code: 0, message: "Timeout: #{e.message}" } if attempt >= attempts - 1
+      sleep(0.4 * (attempt + 1))
+    rescue StandardError => e
+      return { status: :error, code: 0, message: e.message } if attempt >= attempts - 1
+      sleep(0.4 * (attempt + 1))
     end
-
-    break { status: :ok, code: code } if code >= 200 && code < 400
-    break { status: :error, code: code, message: "HTTP #{code}" }
   end
-rescue Net::OpenTimeout, Net::ReadTimeout => e
-  { status: :error, code: 0, message: "Timeout: #{e.message}" }
-rescue StandardError => e
-  { status: :error, code: 0, message: e.message }
+
+  { status: :error, code: 0, message: "Unknown check failure" }
 end
 
 def fetch_url_content(url)
@@ -343,6 +364,8 @@ if failures.empty?
   log "All #{successes.size} checks passed"
   state["last_success"] = now
   state["consecutive_failures"] = 0
+  state.delete("last_failure")
+  state.delete("last_failure_details")
   if state["alerted"]
     notify("SaneApps Monitor", "All links recovered and working!")
     state.delete("alerted")
