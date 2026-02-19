@@ -910,25 +910,33 @@ class ValidationReport
   def q9_support_infrastructure
     issues_found = []
     warnings_found = []
+    keychain_fallback_enabled = ENV.fetch('SANE_KEYCHAIN_FALLBACK', '0') == '1'
+    secret_for = lambda do |service, account, *env_names|
+      env_names.each do |env_name|
+        value = ENV[env_name]
+        return value if value && !value.empty?
+      end
+      return '' unless keychain_fallback_enabled
 
-    # Check keychain has required credentials (ONE AT A TIME to avoid keychain popup flood)
-    keychain_items = [
-      { service: 'cloudflare', account: 'api_token', name: 'Cloudflare API' },
-      { service: 'resend', account: 'api_key', name: 'Resend Email API' },
-      { service: 'lemonsqueezy', account: 'api_key', name: 'Lemon Squeezy API' }
+      `security find-generic-password -s "#{service}" -a "#{account}" -w 2>/dev/null`.strip
+    end
+
+    # Check required credentials are available (env-first, optional keychain fallback)
+    required_items = [
+      { service: 'cloudflare', account: 'api_token', name: 'Cloudflare API', env: %w[CLOUDFLARE_API_TOKEN] },
+      { service: 'resend', account: 'api_key', name: 'Resend Email API', env: %w[RESEND_API_KEY] },
+      { service: 'lemonsqueezy', account: 'api_key', name: 'Lemon Squeezy API', env: %w[LEMONSQUEEZY_API_KEY] }
     ]
 
-    keychain_items.each do |item|
-      check = `security find-generic-password -s "#{item[:service]}" -a "#{item[:account]}" 2>&1`
-      if check.include?('could not be found')
-        issues_found << "#{item[:name]} key missing from keychain"
-      end
+    required_items.each do |item|
+      value = secret_for.call(item[:service], item[:account], *item[:env])
+      issues_found << "#{item[:name]} key missing (env/keychain)" if value.nil? || value.empty?
     end
 
     # Check Resend API is working (if key exists)
     # Use Net::HTTP to avoid leaking API keys in shell process list
-    resend_key = `security find-generic-password -s "resend" -a "api_key" -w 2>/dev/null`.strip
-    if resend_key && !resend_key.empty? && !resend_key.include?('could not')
+    resend_key = secret_for.call('resend', 'api_key', 'RESEND_API_KEY')
+    if resend_key && !resend_key.empty?
       begin
         uri = URI("https://api.resend.com/emails")
         http = Net::HTTP.new(uri.host, uri.port)
@@ -952,8 +960,8 @@ class ValidationReport
     end
 
     # Check LemonSqueezy API is working (if key exists)
-    ls_key = `security find-generic-password -s "lemonsqueezy" -a "api_key" -w 2>/dev/null`.strip
-    if ls_key && !ls_key.empty? && !ls_key.include?('could not')
+    ls_key = secret_for.call('lemonsqueezy', 'api_key', 'LEMONSQUEEZY_API_KEY')
+    if ls_key && !ls_key.empty?
       begin
         uri = URI("https://api.lemonsqueezy.com/v1/products")
         http = Net::HTTP.new(uri.host, uri.port)

@@ -36,6 +36,7 @@ SANE_BUCKET_PATTERN = Regexp.new(SANE_APPS.map { |a| "#{a.downcase}-downloads" }
 SANE_PAGES_PATTERN = Regexp.new(SANE_APPS.map { |a| "#{a.downcase}-site" }.join('|'))
 # dist.*.com domains
 SANE_DIST_PATTERN = Regexp.new(SANE_APPS.map { |a| "dist\\.#{a.downcase}\\.com" }.join('|'))
+CORPORATE_WE_PATTERN = /\b(?:we|we['’]re|we['’]ll|we['’]ve|our|us)\b/i
 
 begin
   input = JSON.parse($stdin.read)
@@ -211,6 +212,14 @@ end
 #   5. If no flag → block and remind Claude to show draft first
 APPROVAL_FLAG = '/tmp/.gh_post_approved'
 if command.match?(/\bgh\s+(?:issue|pr)\s+(?:comment|close|review|create)\b/)
+  if command.match?(CORPORATE_WE_PATTERN)
+    warn '🔴 BLOCKED: "we/us/our" language in public GitHub post'
+    warn '   SaneApps is one person. Use: I/me/my.'
+    warn ''
+    warn '   ✅ Rewrite draft in first-person singular, then retry.'
+    exit 2
+  end
+
   if File.exist?(APPROVAL_FLAG)
     # Check flag is recent (within 5 minutes) to prevent stale approvals
     age = Time.now - File.mtime(APPROVAL_FLAG)

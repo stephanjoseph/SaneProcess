@@ -66,7 +66,8 @@ if [[ -n "${CLOUDFLARE_API_TOKEN:-}" ]]; then
   CF_TOKEN="$CLOUDFLARE_API_TOKEN"
 fi
 # Fall back to keychain if env vars not set
-if command -v security &>/dev/null; then
+KEYCHAIN_FALLBACK_ENABLED="${SANE_KEYCHAIN_FALLBACK:-0}"
+if [[ "$KEYCHAIN_FALLBACK_ENABLED" == "1" ]] && command -v security &>/dev/null; then
   [[ -z "$RESEND_KEY" ]] && RESEND_KEY=$(security find-generic-password -s resend -a api_key -w 2>/dev/null || echo "")
   [[ -z "$CF_TOKEN" ]] && CF_TOKEN=$(security find-generic-password -s cloudflare -a api_token -w 2>/dev/null || echo "")
   [[ -z "$LS_KEY" ]] && LS_KEY=$(security find-generic-password -s lemonsqueezy -a api_key -w 2>/dev/null || echo "")

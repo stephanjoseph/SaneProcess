@@ -474,6 +474,105 @@ module SaneToolsTest
     StateManager.reset(:planning)
     StateManager.reset(:edit_attempts)
 
+    # === GITHUB POST GUARD TESTS ===
+    warn ''
+    warn 'Testing GitHub post guard:'
+
+    approval_flag = '/tmp/.gh_post_approved'
+    File.delete(approval_flag) if File.exist?(approval_flag)
+
+    # Setup: all non-GitHub guards satisfied
+    StateManager.reset(:research)
+    StateManager.reset(:planning)
+    StateManager.reset(:edit_attempts)
+    StateManager.update(:mcp_health) { |h| h[:verified_this_session] = true; h }
+    StateManager.update(:session_docs) { |sd| sd[:required] = []; sd[:read] = []; sd }
+    StateManager.update(:requirements) { |r| r[:is_big_task] = false; r[:is_research_only] = false; r[:requested] = []; r[:satisfied] = []; r }
+    research_categories.keys.each do |cat|
+      StateManager.update(:research) { |r| r[cat] = { completed_at: Time.now.iso8601, tool: 'test', via_task: false }; r }
+    end
+
+    # Test 1: Block public GitHub post without approval
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_tool_proc.call('mcp__github__add_issue_comment', {
+      'owner' => 'sane-apps',
+      'repo' => 'SaneBar',
+      'issue_number' => 1,
+      'body' => 'I fixed this in the latest release.'
+    })
+    $stderr.reopen(original_stderr)
+
+    if exit_code == 2
+      passed += 1
+      warn '  PASS: GitHub post without approval blocked'
+    else
+      failed += 1
+      warn "  FAIL: GitHub post without approval should block, got exit #{exit_code}"
+    end
+
+    # Test 2: Allow post with fresh approval flag
+    FileUtils.touch(approval_flag)
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_tool_proc.call('mcp__github__add_issue_comment', {
+      'owner' => 'sane-apps',
+      'repo' => 'SaneBar',
+      'issue_number' => 1,
+      'body' => 'I fixed this in v2.1.6.'
+    })
+    $stderr.reopen(original_stderr)
+
+    if exit_code == 0
+      passed += 1
+      warn '  PASS: GitHub post with approval flag allowed'
+    else
+      failed += 1
+      warn "  FAIL: GitHub post with approval flag should pass, got exit #{exit_code}"
+    end
+
+    # Test 3: Block corporate "we" language even with approval flag
+    FileUtils.touch(approval_flag)
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_tool_proc.call('mcp__github__add_issue_comment', {
+      'owner' => 'sane-apps',
+      'repo' => 'SaneBar',
+      'issue_number' => 1,
+      'body' => 'We fixed this and our team verified it.'
+    })
+    $stderr.reopen(original_stderr)
+
+    if exit_code == 2
+      passed += 1
+      warn '  PASS: Corporate language blocked for public GitHub post'
+    else
+      failed += 1
+      warn "  FAIL: Corporate language should block, got exit #{exit_code}"
+    end
+
+    # Test 4: Non-SaneApps owner is not gated by this rule
+    File.delete(approval_flag) if File.exist?(approval_flag)
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_tool_proc.call('mcp__github__add_issue_comment', {
+      'owner' => 'octocat',
+      'repo' => 'Hello-World',
+      'issue_number' => 1,
+      'body' => 'we can keep this wording in non-SaneApps repos'
+    })
+    $stderr.reopen(original_stderr)
+
+    if exit_code == 0
+      passed += 1
+      warn '  PASS: Non-SaneApps GitHub post not blocked by Sane voice rule'
+    else
+      failed += 1
+      warn "  FAIL: Non-SaneApps owner should bypass this guard, got exit #{exit_code}"
+    end
+
+    File.delete(approval_flag) if File.exist?(approval_flag)
+
     # === DEPLOYMENT SAFETY TESTS ===
     warn ''
     warn 'Testing deployment safety:'

@@ -76,6 +76,10 @@ class SaneTest
     @pro_mode = args.include?('--pro-mode')
     @reset_tcc = args.include?('--reset-tcc')
     @fresh = args.include?('--fresh')
+    @allow_keychain = args.include?('--allow-keychain')
+    @allow_unsigned_debug = args.include?('--allow-unsigned-debug')
+    @target = nil
+    @last_build_config = nil
     @app_dir = File.join(SANE_APPS_ROOT, app_name)
 
     abort "❌ Unknown app: #{app_name}. Known: #{APPS.keys.join(', ')}" unless @config
@@ -87,11 +91,11 @@ class SaneTest
     puts "🧪 === SANE TEST: #{@app_name} ==="
     puts ''
 
-    target = determine_target
-    puts "📍 Target: #{target == :mini ? 'Mac mini (remote)' : 'Local'}"
+    @target = determine_target
+    puts "📍 Target: #{@target == :mini ? 'Mac mini (remote)' : 'Local'}"
     puts ''
 
-    case target
+    case @target
     when :mini then run_remote
     when :local then run_local
     end
@@ -257,7 +261,13 @@ class SaneTest
   end
 
   def launch_remote
-    ssh("open #{MINI_APPS_DIR}/#{@app_name}.app")
+    launch_cmd =
+      if @allow_keychain
+        "open #{MINI_APPS_DIR}/#{@app_name}.app"
+      else
+        "open #{MINI_APPS_DIR}/#{@app_name}.app --args --sane-no-keychain"
+      end
+    ssh(launch_cmd)
     sleep 2
     pid = ssh_capture("pgrep -x #{@app_name} 2>/dev/null").strip
     abort '   ❌ App failed to launch on mini' if pid.empty?
@@ -280,6 +290,7 @@ class SaneTest
     step("#{n += 1}. Clean ALL stale copies") { clean_local }
     step("#{n += 1}. Build fresh debug build") { build_debug }
     step("#{n += 1}. Verify single copy") { verify_single_copy_local }
+    step("#{n += 1}. Dedupe Accessibility entries") { dedupe_accessibility_entries_local }
     step("#{n += 1}. Fresh reset") { fresh_reset_local } if @fresh
     step("#{n += 1}. Reset TCC permissions") { reset_tcc_local } if @reset_tcc && !@fresh
     step("#{n += 1}. Set license mode") { set_license_mode_local } if (@free_mode || @pro_mode) && !@fresh
@@ -329,6 +340,24 @@ class SaneTest
     end
   end
 
+  def dedupe_accessibility_entries_local
+    # Local SaneBar launches use signed ProdDebug with production bundle ID.
+    # If a prior unsigned/dev run granted com.sanebar.dev, System Settings shows
+    # two "SaneBar" entries. Remove the dev Accessibility grant in this case.
+    return unless @app_name == 'SaneBar'
+    return unless @config[:dev] && @config[:prod] && @config[:dev] != @config[:prod]
+
+    app_path = find_derived_data_app
+    return unless app_path
+
+    info_plist = File.join(app_path, 'Contents', 'Info.plist')
+    runtime_bundle = `"/usr/libexec/PlistBuddy" -c "Print :CFBundleIdentifier" "#{info_plist}" 2>/dev/null`.strip
+    return unless runtime_bundle == @config[:prod]
+
+    system('tccutil', 'reset', 'Accessibility', @config[:dev], out: File::NULL, err: File::NULL)
+    warn "   Dedupe: reset Accessibility for #{@config[:dev]} (running #{@config[:prod]})"
+  end
+
   def reset_tcc_local
     bundle_ids.each do |bid|
       system('tccutil', 'reset', 'All', bid, out: File::NULL, err: File::NULL)
@@ -341,7 +370,11 @@ class SaneTest
     app_path = find_derived_data_app
     abort '   ❌ Built app not found in DerivedData' unless app_path
 
-    system('open', app_path)
+    if @allow_keychain
+      system('open', app_path)
+    else
+      system('open', app_path, '--args', '--sane-no-keychain')
+    end
     sleep 2
     pid = `pgrep -x #{@app_name} 2>/dev/null`.strip
     abort '   ❌ App failed to launch' if pid.empty?
@@ -441,14 +474,37 @@ with open('$SETTINGS', 'w') as f: json.dump(s, f, indent=2)
       # Check if signing certificates are available; fall back to ad-hoc if not
       has_signing_cert = !`security find-identity -v -p codesigning 2>/dev/null`.strip.start_with?('0 valid')
 
+      # SaneBar has a known macOS WindowServer failure mode when launched from
+      # local unsigned Debug builds. Enforce signed ProdDebug for local runs.
+      if @app_name == 'SaneBar' && @target == :local && !has_signing_cert && !@allow_unsigned_debug
+        abort '   ❌ SaneBar local testing requires Apple Development signing (ProdDebug). Install signing certs or run without --local to use Mac mini.'
+      end
+
+      # Use ProdDebug config when signing certs are available.
+      # Debug config uses ad-hoc signing (CODE_SIGN_IDENTITY="-") and no entitlements,
+      # which causes WindowServer to reject status bar windows on modern macOS
+      # (invisible menu bar items: windowNumber=2^32, Y=-22).
+      # ProdDebug has proper signing + entitlements.
+      config_name = has_signing_cert ? 'ProdDebug' : 'Debug'
+      @last_build_config = config_name
+
       build_args = [
         'xcodebuild',
         '-scheme', @config[:scheme],
         '-destination', 'platform=macOS',
-        '-configuration', 'Debug'
+        '-configuration', config_name
       ]
 
-      unless has_signing_cert
+      if has_signing_cert
+        # Keep dev bundle ID even with ProdDebug config for non-SaneBar apps.
+        # SaneBar local stability depends on signed ProdDebug with default bundle.
+        if @app_name != 'SaneBar'
+          dev_bundle_id = @config[:dev]
+          if dev_bundle_id
+            build_args << "PRODUCT_BUNDLE_IDENTIFIER=#{dev_bundle_id}"
+          end
+        end
+      else
         warn '   ⚠️  No signing cert found — using ad-hoc signing'
         build_args += %w[
           CODE_SIGN_IDENTITY=-
@@ -471,8 +527,21 @@ with open('$SETTINGS', 'w') as f: json.dump(s, f, indent=2)
   end
 
   def find_derived_data_app
-    pattern = File.expand_path("~/Library/Developer/Xcode/DerivedData/#{@app_name}-*/Build/Products/Debug/#{@app_name}.app")
-    Dir.glob(pattern).max_by { |p| File.mtime(p) }
+    configs =
+      if @app_name == 'SaneBar' && @target == :local
+        %w[ProdDebug]
+      elsif @last_build_config
+        [@last_build_config] + (%w[ProdDebug Debug] - [@last_build_config])
+      else
+        %w[ProdDebug Debug]
+      end
+
+    configs.each do |config|
+      pattern = File.expand_path("~/Library/Developer/Xcode/DerivedData/#{@app_name}-*/Build/Products/#{config}/#{@app_name}.app")
+      result = Dir.glob(pattern).max_by { |p| File.mtime(p) }
+      return result if result
+    end
+    nil
   end
 
   def ssh(cmd)
@@ -504,6 +573,8 @@ if ARGV.empty? || ARGV[0] == '--help'
   warn '  --free-mode  Clear license data — launch as Free user'
   warn '  --pro-mode   Inject test license key — launch in Pro validation mode'
   warn '  --reset-tcc  Reset TCC/Accessibility permissions (only for fresh installs)'
+  warn '  --allow-keychain  Allow real keychain access during app launch (default is no-keychain)'
+  warn '  --allow-unsigned-debug  Allow local SaneBar Debug launch without signing certs (unsupported visibility path)'
   warn ''
   warn 'Default: deploys to Mac mini if reachable, local otherwise.'
   warn 'TCC is preserved by default — single-copy enforcement prevents stale grants.'

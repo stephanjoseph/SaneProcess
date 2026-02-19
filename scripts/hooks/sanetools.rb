@@ -379,6 +379,13 @@ def process_tool(tool_name, tool_input)
     return 2
   end
 
+  # Public GitHub posting guard: requires explicit user approval and "I/me/my" voice.
+  if (reason = SaneToolsChecks.check_github_post_guard(tool_name, tool_input))
+    log_action(tool_name, true, reason)
+    output_block(reason, tool_name)
+    return 2
+  end
+
   # Check if enforcement is halted
   SaneToolsChecks.check_enforcement_halted
 
