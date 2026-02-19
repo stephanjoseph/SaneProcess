@@ -8,7 +8,7 @@ Thanks for your interest in contributing to SaneProcess! This document explains 
 
 SaneProcess is an SOP (Standard Operating Procedure) enforcement framework for AI-assisted development with Claude Code. It helps developers ship reliable code through:
 
-- 16 Golden Rules for AI-assisted development
+- 17 Golden Rules for AI-assisted development
 - Automated compliance hooks
 - Circuit breaker pattern for error prevention
 - Cross-session memory for bug patterns

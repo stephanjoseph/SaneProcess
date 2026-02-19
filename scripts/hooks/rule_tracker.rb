@@ -36,7 +36,8 @@ module RuleTracker
     12 => 'TALK WHILE I WALK',
     13 => 'CONTEXT OR CHAOS',
     14 => 'PROMPT LIKE A PRO',
-    15 => 'REVIEW BEFORE YOU SHIP'
+    15 => 'REVIEW BEFORE YOU SHIP',
+    16 => "DON'T FRAGMENT, INTEGRATE"
   }.freeze
 
   # Map hooks to their primary rule

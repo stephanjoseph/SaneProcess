@@ -34,7 +34,7 @@ This is a **process framework** with three layers:
 
 | Layer | What It Is | Transferable? |
 |-------|-----------|---------------|
-| **1. The Rules** | 16 Golden Rules + workflows + research protocol | ✅ Yes - copy this document |
+| **1. The Rules** | 17 Golden Rules + workflows + research protocol | ✅ Yes - copy this document |
 | **2. The Tooling** | CLI automation (SaneMaster.rb or equivalent) | ⚠️ Adapt - needs project setup |
 | **3. The Enforcement** | Claude Code hooks + MCP servers | ⚠️ Adapt - config files provided |
 
@@ -555,6 +555,29 @@ User talks, you listen, work continues uninterrupted.
 - [ ] Code follows project patterns and style
 - [ ] Error handling is comprehensive
 - [ ] Changes align with codebase architecture
+
+---
+
+## Rule #16: DON'T FRAGMENT, INTEGRATE
+
+✅ DO: Upgrade existing files, skills, scripts, and docs
+❌ DON'T: Create new files when existing ones can be extended
+
+```
+🟢 RIGHT: Add a section to DEVELOPMENT.md for new test procedures
+🟢 RIGHT: Add a new function to an existing script
+🟢 RIGHT: Expand an existing skill with new capabilities
+🔴 WRONG: Create TESTING.md alongside DEVELOPMENT.md
+🔴 WRONG: Create a new script that overlaps with an existing one
+🔴 WRONG: Duplicate a global skill into a project directory
+```
+
+**The 5-doc standard:** CLAUDE.md, README.md, DEVELOPMENT.md, ARCHITECTURE.md, SESSION_HANDOFF.md. No sixth doc. Research → ARCHITECTURE §4. Testing → DEVELOPMENT.
+
+**Before creating anything new, ask:**
+1. Does something already exist that does this? → Improve it.
+2. Can this be a section in an existing doc or function in an existing script? → Almost always yes.
+3. If truly new, is it global or project-specific? → Global-first.
 
 ---
 
@@ -1263,6 +1286,7 @@ killall -9 <app-name>
 │  #13 CONTEXT OR CHAOS (maintain CLAUDE.md)                 │
 │  #14 PROMPT LIKE A PRO (specific prompts)                  │
 │  #15 REVIEW BEFORE YOU SHIP (self-review)                  │
+│  #16 DON'T FRAGMENT, INTEGRATE (5-doc standard)            │
 ├────────────────────────────────────────────────────────────┤
 │ RESEARCH ORDER                                             │
 │   1. apple-docs MCP (Apple APIs)                           │

@@ -8,13 +8,13 @@ If we are starting a new session run these:
 - Read `~/.claude/SKILLS_REGISTRY.md` for global skills/tools.
 - Run `ruby ~/SaneApps/infra/SaneProcess/scripts/validation_report.rb`.
 
-The 16 Golden Rules:
+The 17 Golden Rules:
 
 | # | Rule | What It Means |
 |---|------|---------------|
 | 0 | NAME IT BEFORE YOU TAME IT | State which rule applies before acting |
 | 1 | STAY IN LANE, NO PAIN | No edits outside project without asking |
-| 2 | VERIFY, THEN TRY | Check APIs/tools exist before using. Read docs, not memory |
+| 2 | VERIFY, THEN TRY | Check APIs/tools exist before using. Read docs, not memory. Write findings to research.md with TTL |
 | 3 | TWO STRIKES? STOP AND CHECK | Failed twice → STOP, read the error, research |
 | 4 | GREEN MEANS GO | Tests must pass before "done" |
 | 5 | HOUSE RULES, USE TOOLS | Use project tools (SaneMaster, etc.), not raw commands |
@@ -23,11 +23,12 @@ The 16 Golden Rules:
 | 8 | BUG FOUND? WRITE IT DOWN | Document bugs in memory/issues |
 | 9 | NEW FILE? GEN THE PILE | Use scaffolding tools and templates |
 | 10 | FIVE HUNDRED'S FINE, EIGHT'S THE LINE | Max 500 lines, must split at 800 |
-| 11 | TOOL BROKE? FIX THE YOKE | Fix broken tools, don't work around them |
+| 11 | TOOL BROKE? FIX THE YOKE | Fix broken tools, don't work around them. Spot patterns → automate them |
 | 12 | TALK WHILE I WALK | Subagents for heavy work, stay responsive |
 | 13 | CONTEXT OR CHAOS | Maintain CLAUDE.md, load at start, save at end |
 | 14 | PROMPT LIKE A PRO | Specific prompts with file paths, constraints, context |
 | 15 | REVIEW BEFORE YOU SHIP | Self-review for security, edge cases, correctness |
+| 16 | DON'T FRAGMENT, INTEGRATE | Upgrade existing files/skills/docs. 5-doc standard. No orphan files |
 
 If a hook or prompt fires, read it first and follow it exactly.
 

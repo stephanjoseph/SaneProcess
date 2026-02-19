@@ -85,7 +85,7 @@ module QaDriftChecks
   end
 
   # === CHECK 2: Rule Count Cross-Check ===
-  # Verifies rule_tracker.rb RULES count matches README "16 Golden Rules"
+  # Verifies rule_tracker.rb RULES count matches README "17 Golden Rules"
   def check_rule_count_crossref
     print 'Checking rule count cross-reference... '
 

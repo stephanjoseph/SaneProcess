@@ -4,7 +4,7 @@
 
 **SaneProcess** is a battle-tested SOP (Standard Operating Procedure) enforcement framework for AI-assisted development with Claude Code. It provides:
 
-- **16 Golden Rules** for AI discipline and reliable code delivery
+- **17 Golden Rules** for AI discipline and reliable code delivery
 - **Circuit breaker** pattern to prevent repeated errors and wasted time
 - **Memory system** for cross-session bug pattern persistence
 - **Hook architecture** for automated compliance enforcement
@@ -109,7 +109,7 @@ ruby scripts/license_gen.rb --validate SP-XXXX-...  # Validate key
 ### Never Do This
 
 1. **Never modify .claude/state.json directly** - Always use state_manager.rb
-2. **Never break the 16 Golden Rules** - They're the product's core value
+2. **Never break the 17 Golden Rules** - They're the product's core value
 3. **Never write files outside the project** - Respect #1: STAY IN YOUR LANE
 4. **Never remove tests** - Only add or update them
 5. **Never use raw build commands** - Always use project tools (./Scripts/SaneMaster.rb)
@@ -137,14 +137,14 @@ All components use the **Sane** prefix for brand consistency:
 
 When adding new components, follow this naming pattern.
 
-## The 16 Golden Rules (Reference)
+## The 17 Golden Rules (Reference)
 
 These are the product's core value proposition. Never modify their numbering or core meaning:
 
 ```
 #0  NAME THE RULE BEFORE YOU CODE
 #1  STAY IN YOUR LANE (files in project)
-#2  VERIFY BEFORE YOU TRY (check docs first)
+#2  VERIFY BEFORE YOU TRY (check docs first, write findings to research.md)
 #3  TWO STRIKES? INVESTIGATE
 #4  GREEN MEANS GO (tests must pass)
 #5  THEIR HOUSE, THEIR RULES (use project tools)
@@ -153,11 +153,12 @@ These are the product's core value proposition. Never modify their numbering or 
 #8  BUG FOUND? WRITE IT DOWN
 #9  NEW FILE? GEN THAT PILE
 #10 FIVE HUNDRED'S FINE, EIGHT'S THE LINE
-#11 TOOL BROKE? FIX THE YOKE
+#11 TOOL BROKE? FIX THE YOKE (spot patterns, automate them)
 #12 TALK WHILE I WALK (stay responsive)
 #13 CONTEXT OR CHAOS (maintain CLAUDE.md)
 #14 PROMPT LIKE A PRO (specific prompts)
 #15 REVIEW BEFORE YOU SHIP (self-review)
+#16 DON'T FRAGMENT, INTEGRATE (upgrade existing, 5-doc standard)
 ```
 
 ## Hook Architecture Principles
@@ -245,7 +246,7 @@ When adding features or fixing bugs, check if the change should be propagated to
 While this is a commercial product, contributions should:
 
 1. **Maintain the existing architecture** - Don't introduce new paradigms without discussion
-2. **Follow the 16 Golden Rules** - Practice what we preach
+2. **Follow the 17 Golden Rules** - Practice what we preach
 3. **Add tests for new features** - Maintain test coverage
 4. **Update documentation** - Code without docs is incomplete
 5. **Preserve user workflows** - Don't break existing commands or patterns
