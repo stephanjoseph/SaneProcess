@@ -95,6 +95,59 @@ Daily development status report across all projects.
 morning-report.sh
 ```
 
+### sync-codex-mini.sh
+
+Sync SaneOps Codex automation config from MacBook to Mini and enforce runner roles.
+
+**Usage:**
+```bash
+# Sync to default host "mini" and restart Codex on Mini
+sync-codex-mini.sh
+
+# Sync quietly without restarting Codex
+sync-codex-mini.sh mini --quiet --no-restart
+```
+
+**What it does:**
+1. Forces local Codex automations to paused (prevents duplicate runs).
+2. Rewrites home paths for Mini and syncs automation TOML files.
+3. Ensures Mini has the latest `check-inbox.sh`.
+4. Sets Mini AM run active and PM run paused.
+5. Optionally restarts Codex on Mini so scheduler reloads immediately.
+
+### start-workday.sh
+
+One-command MacBook workflow start while Mini runs unattended.
+
+**Usage:**
+```bash
+start-workday.sh
+start-workday.sh mini --no-open
+```
+
+**What it does:**
+1. Syncs automation config to Mini.
+2. Pulls latest Mini morning/nightly reports locally.
+3. Shows Mini automation scheduler status.
+4. Runs inbox summary locally.
+5. Opens reports and Codex app (unless `--no-open`).
+
+### git-sync-safe.sh
+
+Nightly safe Git sync to avoid duplicate work between machines.
+
+**Usage:**
+```bash
+git-sync-safe.sh
+```
+
+**What it does:**
+1. Scans SaneApps repos (`apps/*`, `SaneAI`, `infra/SaneProcess`).
+2. Fetches from origin.
+3. Fast-forward pulls only when clean.
+4. Auto-pushes only clean `main/master` ahead commits.
+5. Skips dirty trees and non-main branches, then logs warnings.
+
 ## Models
 
 Default models used:
