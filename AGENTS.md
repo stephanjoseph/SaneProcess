@@ -51,3 +51,6 @@ Docs:
 References:
 - Global rules and gotchas: `/Users/sj/.claude/CLAUDE.md`
 - Infra rules: `/Users/sj/SaneApps/infra/SaneProcess/CLAUDE.md`
+- Scripts & operations catalog: each app's `ARCHITECTURE.md` § "Operations & Scripts Reference"
+- Shared infra scripts: `/Users/sj/SaneApps/infra/SaneProcess/scripts/` (SaneMaster, release.sh, sane_test.rb, etc.)
+- Mini scripts source of truth: `/Users/sj/SaneApps/infra/SaneProcess/scripts/mini/`
