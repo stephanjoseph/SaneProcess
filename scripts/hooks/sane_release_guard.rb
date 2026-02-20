@@ -18,6 +18,7 @@
 #   - Direct `swift.*sign_update` (manual Sparkle signing)
 #   - Direct `generate_keys` or Sparkle key generation (ONE shared key, never generate)
 #   - Manual appcast.xml editing (must go through release.sh)
+#   - GitHub submissions to external repos without reading their contribution guidelines
 #
 # ALLOWS:
 #   - release.sh invocations (the proper way)
@@ -197,6 +198,36 @@ if command.match?(/\bcurl\b.*api\.appstoreconnect\.apple\.com/) && command.match
   warn ''
   warn '   ✅ Use instead: bash ~/SaneApps/infra/SaneProcess/scripts/release.sh --project <path> --deploy'
   exit 2
+end
+
+# Block 15: External repo submissions require reading contribution guidelines first
+# Before creating PRs, commenting, or opening issues on repos that aren't sane-apps/*,
+# Claude must prove it read the repo's contribution guidelines by:
+#   1. Fetching CONTRIBUTING.md (or equivalent) from the target repo
+#   2. Explaining the key formatting/submission rules to the user
+#   3. Touching /tmp/.contrib_read_<owner>_<repo> flag file
+# Flag persists for the session (guidelines don't change mid-session).
+if command.match?(/\bgh\s+(?:issue|pr)\s+(?:comment|close|review|create)\b/)
+  repo = command[/--repo\s+(\S+)/, 1]
+  if repo
+    owner, name = repo.split('/', 2)
+    unless owner&.downcase == 'sane-apps' || owner&.downcase == 'mrsaneapps'
+      flag = "/tmp/.contrib_read_#{owner}_#{name}".gsub(/[^a-zA-Z0-9_\-\/.]/, '_')
+      unless File.exist?(flag)
+        warn '🔴 BLOCKED: Submission to external repo without reading contribution guidelines'
+        warn "   Target: #{repo}"
+        warn ''
+        warn '   Before submitting to external repos, you MUST:'
+        warn '   1. Fetch and READ their CONTRIBUTING.md (or contribution guidelines)'
+        warn '   2. Explain the key formatting rules to the user'
+        warn '   3. Verify your submission complies with EVERY rule'
+        warn "   4. touch #{flag}"
+        warn ''
+        warn '   This prevents sloppy submissions that waste maintainer time.'
+        exit 2
+      end
+    end
+  end
 end
 
 # Block 14: Public GitHub interactions (comments, close, review) require user approval

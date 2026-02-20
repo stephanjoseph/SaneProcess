@@ -258,16 +258,14 @@ open AppName.xcodeproj
 ### Local Development
 
 ```bash
-# Build debug
-xcodebuild -project AppName.xcodeproj -scheme AppName -configuration Debug build
-
-# Run tests
-xcodebuild -project AppName.xcodeproj -scheme AppName test
-
-# Or use Xcode Tools MCP:
+# Prefer Xcode Tools MCP (official via xcrun mcpbridge):
 # mcp__xcode__XcodeListWindows
 # mcp__xcode__BuildProject
 # mcp__xcode__RunAllTests
+
+# CLI/script fallback:
+# xcodebuild -project AppName.xcodeproj -scheme AppName -configuration Debug build
+# xcodebuild -project AppName.xcodeproj -scheme AppName test
 ```
 
 ### Release Build
