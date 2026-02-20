@@ -539,6 +539,41 @@ The `sane-dist` Cloudflare Worker serves app downloads (DMG/ZIP) from a shared R
 **D1 database:** `sane-dist-analytics` (ID: `c1a9df59-650b-4ffe-9f80-83439d8e9e13`, region: ENAM)
 **API key:** Stored as Wrangler secret `ANALYTICS_API_KEY` and in macOS keychain as `dist-analytics`/`api_key`.
 
+### Daily Report (`morning-report.sh`)
+
+Automated daily business report covering revenue, downloads, traffic, GitHub, customer intel, and system health. Runs once daily at 7pm EST via LaunchAgent.
+
+**LaunchAgent:** `~/Library/LaunchAgents/com.saneapps.daily-report.plist`
+- Label: `com.saneapps.daily-report`
+- Schedule: `StartCalendarInterval` Hour=19 (7pm local time)
+- Logs: `outputs/daily_report_cron.log`
+
+**Script:** `scripts/automation/morning-report.sh`
+
+**Report sections (in order):**
+1. **Executive Summary** — 2-line AI-generated overview (via `nv`, 60s timeout)
+2. **Revenue** — LemonSqueezy sales (today/yesterday/week/all-time) + GitHub Sponsors
+3. **Downloads** — From `dl-report.py` calling the sane-dist `/api/stats` endpoint (7-day window, by-app and by-version breakdowns)
+4. **Website Traffic** — Cloudflare analytics per domain (7-day views/uniques)
+5. **GitHub** — Stars, forks, clones, views per repo; open issues; referrer sources
+6. **Customer Intel** — Pending emails (count + top 5) and high-priority bugs (top 5)
+7. **Health** — API connectivity checks (LemonSqueezy, Cloudflare, GitHub, dist workers, checkout). One line when all OK.
+8. **Git Status** — Last commit date and clean/dirty status per app repo
+
+**Environment & API keys:**
+- All keys loaded from `~/.config/nv/env` (keychain is inaccessible in headless LaunchAgent context)
+- Required keys: `GITHUB_TOKEN`, `LEMONSQUEEZY_API_KEY`, `CLOUDFLARE_API_TOKEN`, `RESEND_API_KEY`, `DIST_ANALYTICS_KEY`, `NV_API_KEY`
+- File permissions: 600
+
+**Reliability features:**
+- `safe_curl` wrapper enforces timeouts on all HTTP calls (10s connect, 30s max)
+- `timeout 60` on `nv` CLI calls (AI summary generation)
+- Lock file with 30-minute stale detection prevents overlapping runs
+- All analytics/AI failures are non-fatal — report always generates
+- Archive copy saved to `outputs/reports/YYYY-MM-DD.md` before overwriting
+
+**Output:** `outputs/morning_report.md` (latest) + `outputs/reports/` (archive)
+
 ---
 
 ## 7. Test Coverage Map
