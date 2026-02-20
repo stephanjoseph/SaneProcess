@@ -1127,9 +1127,13 @@ MCP (Model Context Protocol) servers provide external knowledge.
 | Server | Purpose |
 |--------|---------|
 | `apple-docs` | Apple Developer Documentation, WWDC videos |
-| `context7` | Real-time library documentation |
 | `github` | GitHub API (PRs, issues, code) |
+| `macos-automator` | macOS UI automation and app scripting |
 | `memory` | Official Memory MCP (knowledge-graph.jsonl) |
+| `nvidia-build` | Access NVIDIA-hosted text/code/vision models |
+| `openaiDeveloperDocs` | OpenAI docs + OpenAPI lookup via MCP |
+| `serena` | Symbol-aware code navigation and project memory tools |
+| `context7` (optional) | Real-time library documentation |
 | `xcode` | Xcode build/test/preview via `xcrun mcpbridge` |
 
 ## Configuration
@@ -1139,8 +1143,22 @@ MCP servers are configured in `.mcp.json`:
 ```json
 {
   "mcpServers": {
-    "apple-docs": { "command": "npx", "args": ["apple-docs-mcp"] },
-    "memory": { "command": "npx", "args": ["@anthropic/memory-mcp"] }
+    "apple-docs": { "command": "node", "args": ["/Users/sj/Dev/apple-docs-mcp-local/dist/index.js"] },
+    "github": { "command": "node", "args": ["/Users/sj/.codex/bin/github-mcp-bridge.mjs"] },
+    "macos-automator": { "command": "node", "args": ["/Users/sj/.npm-global/lib/node_modules/@steipete/macos-automator-mcp/dist/server.js"] },
+    "memory": {
+      "command": "node",
+      "args": ["/Users/sj/.npm-global/lib/node_modules/@modelcontextprotocol/server-memory/dist/index.js"],
+      "env": { "MEMORY_FILE_PATH": "/Users/sj/.claude/memory/knowledge-graph.jsonl" }
+    },
+    "nvidia-build": { "command": "/Users/sj/.local/share/nvidia-mcp-venv/bin/python3", "args": ["/Users/sj/.local/share/nvidia-mcp-venv/nvidia_mcp_server.py"] },
+    "openaiDeveloperDocs": { "url": "https://developers.openai.com/mcp" },
+    "serena": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/oraios/serena", "serena", "start-mcp-server", "--context", "claude-code", "--project-from-cwd"],
+      "env": { "ENABLE_TOOL_SEARCH": "true" }
+    },
+    "xcode": { "command": "xcrun", "args": ["mcpbridge"] }
   }
 }
 ```
