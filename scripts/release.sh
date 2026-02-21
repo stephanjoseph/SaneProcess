@@ -385,6 +385,7 @@ print_help() {
     echo "  --version X.Y.Z      Set version number"
     echo "  --notes \"...\"      Release notes for GitHub (required with --full)"
     echo "  --allow-republish    Allow republishing an already-live version/build"
+    echo "  --allow-unsynced-peer  Bypass Air/mini reconcile gate for this release"
     echo "  --website-only       Deploy website + appcast only (no build/R2/signing)"
     echo "  -h, --help           Show this help"
 }
@@ -401,6 +402,135 @@ ensure_git_clean() {
         log_error "Git working directory not clean. Commit or stash changes first."
         exit 1
     fi
+}
+
+shell_true() {
+    case "${1:-}" in
+        true|TRUE|True|1|yes|YES|on|ON)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+default_peer_host_for_project() {
+    case "${PROJECT_ROOT}" in
+        /Users/sj/*)
+            echo "mini"
+            ;;
+        /Users/stephansmac/*)
+            echo "air"
+            ;;
+        *)
+            echo "mini"
+            ;;
+    esac
+}
+
+default_peer_repo_path_for_project() {
+    case "${PROJECT_ROOT}" in
+        /Users/sj/*)
+            echo "/Users/stephansmac/${PROJECT_ROOT#/Users/sj/}"
+            ;;
+        /Users/stephansmac/*)
+            echo "/Users/sj/${PROJECT_ROOT#/Users/stephansmac/}"
+            ;;
+        *)
+            echo ""
+            ;;
+    esac
+}
+
+enforce_machine_reconcile() {
+    if ! shell_true "${RELEASE_RECONCILE_ENABLED}"; then
+        return 0
+    fi
+
+    if [ "${ALLOW_UNSYNCED_PEER}" = true ]; then
+        log_warn "Machine reconcile gate bypassed (--allow-unsynced-peer)."
+        return 0
+    fi
+
+    ensure_cmd ssh
+    ensure_cmd git
+
+    local peer_host peer_repo_path peer_branch
+    local local_branch local_head local_dirty
+    local peer_head="" peer_ref_branch="" peer_dirty=""
+    local peer_report peer_path_escaped
+
+    peer_host="${RELEASE_PEER_HOST:-$(default_peer_host_for_project)}"
+    peer_repo_path="${RELEASE_PEER_REPO_PATH:-$(default_peer_repo_path_for_project)}"
+    peer_branch="${RELEASE_PEER_BRANCH:-main}"
+
+    if [ -z "${peer_host}" ] || [ -z "${peer_repo_path}" ]; then
+        log_error "Machine reconcile gate is enabled but peer host/path could not be resolved."
+        log_error "Set release.reconcile.peer_host and release.reconcile.peer_repo_path in .saneprocess, or use --allow-unsynced-peer."
+        exit 1
+    fi
+
+    local_branch=$(git -C "${PROJECT_ROOT}" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+    local_head=$(git -C "${PROJECT_ROOT}" rev-parse HEAD 2>/dev/null || true)
+    local_dirty=$(git -C "${PROJECT_ROOT}" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+
+    if [ -z "${local_head}" ]; then
+        log_error "Unable to read local git HEAD for machine reconcile gate."
+        exit 1
+    fi
+
+    if [ "${local_dirty}" != "0" ]; then
+        log_error "Local repo is not clean (${local_dirty} change(s)). Resolve before release."
+        exit 1
+    fi
+
+    if [ -n "${peer_branch}" ] && [ "${local_branch}" != "${peer_branch}" ]; then
+        log_error "Local branch is '${local_branch}', expected '${peer_branch}' for release."
+        exit 1
+    fi
+
+    peer_path_escaped=$(printf '%q' "${peer_repo_path}")
+    if ! peer_report=$(ssh -o BatchMode=yes -o ConnectTimeout=6 "${peer_host}" \
+        "cd ${peer_path_escaped} >/dev/null 2>&1 && printf 'HEAD=%s\nBRANCH=%s\nDIRTY=%s\n' \"\$(git rev-parse HEAD 2>/dev/null || echo)\" \"\$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo)\" \"\$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')\""); then
+        log_error "Could not query peer repo ${peer_host}:${peer_repo_path}."
+        log_error "Fix connectivity/repo path first, or use --allow-unsynced-peer for emergencies."
+        exit 1
+    fi
+
+    while IFS='=' read -r key value; do
+        case "${key}" in
+            HEAD) peer_head="${value}" ;;
+            BRANCH) peer_ref_branch="${value}" ;;
+            DIRTY) peer_dirty="${value}" ;;
+        esac
+    done <<< "${peer_report}"
+
+    if [ -z "${peer_head}" ] || [ -z "${peer_ref_branch}" ] || [ -z "${peer_dirty}" ]; then
+        log_error "Peer repo state parse failed for ${peer_host}:${peer_repo_path}."
+        exit 1
+    fi
+
+    if [ "${peer_dirty}" != "0" ]; then
+        log_error "Peer repo has ${peer_dirty} uncommitted change(s): ${peer_host}:${peer_repo_path}"
+        log_error "Reconcile both machines before release, or use --allow-unsynced-peer for emergencies."
+        exit 1
+    fi
+
+    if [ -n "${peer_branch}" ] && [ "${peer_ref_branch}" != "${peer_branch}" ]; then
+        log_error "Peer branch is '${peer_ref_branch}', expected '${peer_branch}'."
+        exit 1
+    fi
+
+    if [ "${local_head}" != "${peer_head}" ]; then
+        log_error "Air/mini are not reconciled."
+        log_error "Local (${local_branch}) HEAD: ${local_head}"
+        log_error "Peer  (${peer_ref_branch}) HEAD: ${peer_head}"
+        log_error "Merge/sync both machines first, or use --allow-unsynced-peer for emergencies."
+        exit 1
+    fi
+
+    log_info "Machine reconcile gate passed: local and ${peer_host} are synced at ${local_head:0:12}"
 }
 
 resolve_path() {
@@ -897,6 +1027,7 @@ RUN_GH_RELEASE=false
 RUN_DEPLOY=false
 WEBSITE_ONLY=false
 ALLOW_REPUBLISH=false
+ALLOW_UNSYNCED_PEER=false
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -927,6 +1058,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --allow-republish)
             ALLOW_REPUBLISH=true
+            shift
+            ;;
+        --allow-unsynced-peer)
+            ALLOW_UNSYNCED_PEER=true
             shift
             ;;
         --full)
@@ -1012,6 +1147,10 @@ DMG_DROP_POS="${DMG_DROP_POS:-600 185}"
 DMG_HIDE_EXTENSION="${DMG_HIDE_EXTENSION:-true}"
 DMG_NO_INTERNET_ENABLE="${DMG_NO_INTERNET_ENABLE:-false}"
 VERIFY_STAPLE="${VERIFY_STAPLE:-false}"
+RELEASE_RECONCILE_ENABLED="${RELEASE_RECONCILE_ENABLED:-true}"
+RELEASE_PEER_HOST="${RELEASE_PEER_HOST:-}"
+RELEASE_PEER_REPO_PATH="${RELEASE_PEER_REPO_PATH:-}"
+RELEASE_PEER_BRANCH="${RELEASE_PEER_BRANCH:-main}"
 
 WORKSPACE="${WORKSPACE:-}"
 XCODEPROJ="${XCODEPROJ:-}"
@@ -1140,6 +1279,7 @@ if [ "${FULL_RELEASE}" = true ]; then
     ensure_cmd git
     ensure_cmd gh
     ensure_git_clean
+    enforce_machine_reconcile
 
     # ─── Pre-release safety gates (learned from 46 issues + 200 emails) ───
 

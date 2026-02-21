@@ -58,6 +58,10 @@ emit('GITHUB_REPO', fetch_config(config, 'release', 'github_repo'))
 emit('SIGNING_IDENTITY', fetch_config(config, 'release', 'signing_identity'))
 emit('TEAM_ID', fetch_config(config, 'release', 'team_id'))
 emit('VERIFY_STAPLE', fetch_config(config, 'release', 'verify_staple'))
+emit('RELEASE_RECONCILE_ENABLED', fetch_config(config, 'release', 'reconcile', 'enabled'))
+emit('RELEASE_PEER_HOST', fetch_config(config, 'release', 'reconcile', 'peer_host'))
+emit('RELEASE_PEER_REPO_PATH', fetch_config(config, 'release', 'reconcile', 'peer_repo_path'))
+emit('RELEASE_PEER_BRANCH', fetch_config(config, 'release', 'reconcile', 'peer_branch'))
 
 # DMG settings
 emit('DMG_VOLUME_ICON', fetch_config(config, 'release', 'dmg', 'volume_icon'))
