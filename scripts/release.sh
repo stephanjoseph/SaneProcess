@@ -9,6 +9,9 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Ensure Homebrew-installed tools resolve in non-interactive shells (CI/SSH).
+export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH}"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -388,6 +391,7 @@ print_help() {
     echo "  --allow-unsynced-peer  Bypass Air/mini reconcile gate for this release"
     echo "  --skip-appstore      Skip App Store archive/export/upload even if enabled in config"
     echo "  --website-only       Deploy website + appcast only (no build/R2/signing)"
+    echo "  --preflight-only     Run all release gates and exit (no build/publish)"
     echo "  -h, --help           Show this help"
 }
 
@@ -1015,6 +1019,231 @@ sanity_check_app_for_notarization() {
     done < <(find "${host_app_path}" -type f -path "*/Contents/MacOS/*" -print0 2>/dev/null || true)
 }
 
+
+check_required_commands() {
+    local missing=()
+    local cmd
+    for cmd in git xcodebuild codesign xcrun hdiutil ditto; do
+        if ! command -v "${cmd}" >/dev/null 2>&1; then
+            missing+=("${cmd}")
+        fi
+    done
+
+    if [ ${#missing[@]} -gt 0 ]; then
+        log_error "Missing required commands: ${missing[*]}"
+        return 1
+    fi
+
+    if [ "${FULL_RELEASE}" = true ] || [ "${RUN_DEPLOY}" = true ]; then
+        if ! command -v gh >/dev/null 2>&1; then
+            log_error "Missing required command for release/deploy: gh"
+            return 1
+        fi
+    fi
+
+    return 0
+}
+
+check_git_clean_gate() {
+    if [ -n "$(git -C "${PROJECT_ROOT}" status --porcelain 2>/dev/null)" ]; then
+        log_error "Git working directory is not clean."
+        return 1
+    fi
+    return 0
+}
+
+check_reconcile_gate() {
+    if (enforce_machine_reconcile); then
+        return 0
+    fi
+    return 1
+}
+
+check_signing_identity_gate() {
+    if ! command -v security >/dev/null 2>&1; then
+        log_error "security CLI not available."
+        return 1
+    fi
+
+    if ! security find-identity -v -p codesigning 2>/dev/null | grep -q "${SIGNING_IDENTITY}"; then
+        log_error "Signing identity not found: ${SIGNING_IDENTITY}"
+        return 1
+    fi
+
+    return 0
+}
+
+prepare_signing_session() {
+    local login_keychain="${HOME}/Library/Keychains/login.keychain-db"
+    local keychain_password="${SANEBAR_KEYCHAIN_PASSWORD:-${KEYCHAIN_PASSWORD:-${KEYCHAIN_PASS:-}}}"
+
+    security default-keychain -d user -s "${login_keychain}" >/dev/null 2>&1 || true
+    security list-keychains -d user -s "${login_keychain}" >/dev/null 2>&1 || true
+    security set-keychain-settings -lut 21600 "${login_keychain}" >/dev/null 2>&1 || true
+
+    if [ -n "${keychain_password}" ]; then
+        if ! security unlock-keychain -p "${keychain_password}" "${login_keychain}" >/dev/null 2>&1; then
+            log_error "Keychain unlock failed with provided password env var."
+            log_error "Check SANEBAR_KEYCHAIN_PASSWORD / KEYCHAIN_PASSWORD / KEYCHAIN_PASS."
+            return 1
+        fi
+    fi
+
+    return 0
+}
+
+resolve_notary_auth() {
+    if [ "${SKIP_NOTARIZE}" = true ]; then
+        NOTARY_AUTH_MODE="skipped"
+        return 0
+    fi
+
+    if xcrun notarytool history --keychain-profile "${NOTARY_PROFILE}" >/dev/null 2>&1; then
+        NOTARY_AUTH_MODE="keychain-profile"
+        return 0
+    fi
+
+    local key_path="${NOTARY_API_KEY_PATH}"
+    local key_id="${NOTARY_API_KEY_ID}"
+    local issuer_id="${NOTARY_API_ISSUER_ID}"
+
+    local any_set=0
+    [ -n "${key_path}" ] && any_set=1
+    [ -n "${key_id}" ] && any_set=1
+    [ -n "${issuer_id}" ] && any_set=1
+
+    local missing=()
+    [ -n "${key_path}" ] || missing+=("NOTARY_API_KEY_PATH")
+    [ -n "${key_id}" ] || missing+=("NOTARY_API_KEY_ID")
+    [ -n "${issuer_id}" ] || missing+=("NOTARY_API_ISSUER_ID")
+
+    if [ "${any_set}" -eq 1 ] && [ ${#missing[@]} -gt 0 ]; then
+        log_error "Notary API fallback is partially configured. Missing: ${missing[*]}"
+        return 1
+    fi
+
+    if [ ${#missing[@]} -eq 0 ]; then
+        if [ ! -f "${key_path}" ]; then
+            log_error "NOTARY_API_KEY_PATH does not exist: ${key_path}"
+            return 1
+        fi
+        NOTARY_AUTH_MODE="api-key"
+        return 0
+    fi
+
+    log_error "Notary auth unavailable. Keychain profile '${NOTARY_PROFILE}' is inaccessible and API fallback is unset."
+    log_error "Set NOTARY_API_KEY_PATH, NOTARY_API_KEY_ID, NOTARY_API_ISSUER_ID or repair notary keychain profile."
+    return 1
+}
+
+check_version_bump_gate() {
+    if [ -n "${VERSION_BUMP_CMD}" ]; then
+        if [ ${#VERSION_BUMP_FILES[@]} -eq 0 ]; then
+            log_error "VERSION_BUMP_CMD is set but VERSION_BUMP_FILES is empty."
+            return 1
+        fi
+
+        local vf
+        local missing=()
+        for vf in "${VERSION_BUMP_FILES[@]}"; do
+            if [ ! -f "${PROJECT_ROOT}/${vf}" ]; then
+                missing+=("${vf}")
+            fi
+        done
+        if [ ${#missing[@]} -gt 0 ]; then
+            log_error "VERSION_BUMP_FILES missing: ${missing[*]}"
+            return 1
+        fi
+
+        if [ -z "${VERSION}" ]; then
+            log_warn "No --version provided; skipping execution test of VERSION_BUMP_CMD."
+            return 0
+        fi
+
+        if [ -n "$(git -C "${PROJECT_ROOT}" status --porcelain 2>/dev/null)" ]; then
+            log_error "Repo must be clean to simulate VERSION_BUMP_CMD."
+            return 1
+        fi
+
+        bump_project_version "${VERSION}"
+
+        local changed=0
+        for vf in "${VERSION_BUMP_FILES[@]}"; do
+            if ! git -C "${PROJECT_ROOT}" diff --quiet -- "${vf}" 2>/dev/null; then
+                changed=1
+            fi
+        done
+
+        restore_version_bump
+
+        if [ "${changed}" -ne 1 ]; then
+            log_error "VERSION_BUMP_CMD ran but produced no file changes."
+            return 1
+        fi
+
+        return 0
+    fi
+
+    if [ -f "${PROJECT_ROOT}/project.yml" ]; then
+        return 0
+    fi
+
+    log_error "No version bump strategy found (no VERSION_BUMP_CMD and no project.yml)."
+    return 1
+}
+
+check_appstore_gate() {
+    if [ "${APPSTORE_ENABLED}" != "true" ] || [ "${SKIP_APPSTORE}" = true ]; then
+        return 0
+    fi
+
+    if [ -z "${APPSTORE_APP_ID}" ] || ! [[ "${APPSTORE_APP_ID}" =~ ^[0-9]+$ ]]; then
+        log_error "APPSTORE_APP_ID is missing or invalid: '${APPSTORE_APP_ID}'"
+        return 1
+    fi
+
+    if [ -z "${APPSTORE_CONTACT_EMAIL}" ]; then
+        log_error "App Store contact email is missing (appstore.contact.email)."
+        return 1
+    fi
+
+    return 0
+}
+
+run_release_preflight_only() {
+    local failures=0
+
+    run_gate() {
+        local name="$1"
+        shift
+        if "$@"; then
+            log_info "[PASS] ${name}"
+        else
+            log_error "[FAIL] ${name}"
+            failures=$((failures + 1))
+        fi
+    }
+
+    log_info "Running release preflight-only checks..."
+
+    run_gate "Required commands" check_required_commands
+    run_gate "Git clean" check_git_clean_gate
+    run_gate "Machine reconcile" check_reconcile_gate
+    run_gate "Version bump configuration" check_version_bump_gate
+    run_gate "Signing identity" check_signing_identity_gate
+    run_gate "Keychain/signing session" prepare_signing_session
+    run_gate "Notarization authentication" resolve_notary_auth
+    run_gate "App Store configuration" check_appstore_gate
+
+    if [ "${failures}" -gt 0 ]; then
+        log_error "Preflight-only failed with ${failures} failing gate(s)."
+        return 1
+    fi
+
+    log_info "Preflight-only checks passed."
+    return 0
+}
+
 # Defaults/flags
 PROJECT_ROOT=""
 CONFIG_PATH=""
@@ -1030,6 +1259,7 @@ WEBSITE_ONLY=false
 ALLOW_REPUBLISH=false
 ALLOW_UNSYNCED_PEER=false
 SKIP_APPSTORE=false
+PREFLIGHT_ONLY=false
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -1080,6 +1310,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --website-only)
             WEBSITE_ONLY=true
+            shift
+            ;;
+        --preflight-only)
+            PREFLIGHT_ONLY=true
             shift
             ;;
         -h|--help)
@@ -1142,6 +1376,10 @@ R2_BUCKET="${R2_BUCKET:-sanebar-downloads}"  # Shared bucket for ALL SaneApps
 USE_SPARKLE="${USE_SPARKLE:-true}"
 MIN_SYSTEM_VERSION="${MIN_SYSTEM_VERSION:-15.0}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-notarytool}"
+NOTARY_API_KEY_PATH="${NOTARY_API_KEY_PATH:-}"
+NOTARY_API_KEY_ID="${NOTARY_API_KEY_ID:-}"
+NOTARY_API_ISSUER_ID="${NOTARY_API_ISSUER_ID:-}"
+NOTARY_AUTH_MODE=""
 GITHUB_REPO="${GITHUB_REPO:-sane-apps/${APP_NAME}}"
 HOMEBREW_TAP_REPO="${HOMEBREW_TAP_REPO:-sane-apps/homebrew-tap}"
 XCODEGEN="${XCODEGEN:-false}"
@@ -1271,6 +1509,13 @@ if [ "${WEBSITE_ONLY}" = true ]; then
     exit 0
 fi
 
+if [ "${PREFLIGHT_ONLY}" = true ]; then
+    if run_release_preflight_only; then
+        exit 0
+    fi
+    exit 1
+fi
+
 # Full release flow
 if [ "${FULL_RELEASE}" = true ]; then
     if [ -z "${VERSION}" ]; then
@@ -1356,6 +1601,19 @@ if [ "${FULL_RELEASE}" = true ]; then
 
     log_info "Bumping version to ${VERSION}..."
     bump_project_version "${VERSION}"
+
+    VERSION_BUMP_CHANGED=0
+    for vf in "${VERSION_BUMP_FILES[@]}"; do
+        if ! git -C "${PROJECT_ROOT}" diff --quiet -- "${vf}" 2>/dev/null; then
+            VERSION_BUMP_CHANGED=1
+        fi
+    done
+    if [ "${VERSION_BUMP_CHANGED}" -ne 1 ]; then
+        log_error "Version bump produced no tracked file changes. Aborting release."
+        restore_version_bump
+        exit 1
+    fi
+
     update_changelog
 
     if [ "${XCODEGEN}" = true ]; then
@@ -1390,13 +1648,19 @@ ensure_cmd xcrun
 ensure_cmd hdiutil
 ensure_cmd ditto
 
-# Fail early if notarization credentials are missing.
-if [ "${SKIP_NOTARIZE}" = false ]; then
-    if ! xcrun notarytool history --keychain-profile "${NOTARY_PROFILE}" >/dev/null 2>&1; then
-        log_error "Notary profile '${NOTARY_PROFILE}' is missing or inaccessible."
-        log_error "Run: xcrun notarytool store-credentials \"${NOTARY_PROFILE}\" ..."
-        exit 1
-    fi
+# Fail early if signing/notarization prerequisites are missing.
+if ! prepare_signing_session; then
+    exit 1
+fi
+
+if ! resolve_notary_auth; then
+    exit 1
+fi
+
+if [ "${NOTARY_AUTH_MODE}" = "api-key" ]; then
+    log_info "Using notarytool API key fallback auth."
+elif [ "${NOTARY_AUTH_MODE}" = "keychain-profile" ]; then
+    log_info "Using notarytool keychain profile auth (${NOTARY_PROFILE})."
 fi
 
 # Build archive
@@ -1620,9 +1884,17 @@ if [ "${SKIP_NOTARIZE}" = false ]; then
     log_info "Submitting for notarization..."
     log_warn "This may take several minutes..."
 
-    xcrun notarytool submit "${NOTARIZE_ZIP}" \
-        --keychain-profile "${NOTARY_PROFILE}" \
-        --wait
+    if [ "${NOTARY_AUTH_MODE}" = "api-key" ]; then
+        xcrun notarytool submit "${NOTARIZE_ZIP}" \
+            --key "${NOTARY_API_KEY_PATH}" \
+            --key-id "${NOTARY_API_KEY_ID}" \
+            --issuer "${NOTARY_API_ISSUER_ID}" \
+            --wait
+    else
+        xcrun notarytool submit "${NOTARIZE_ZIP}" \
+            --keychain-profile "${NOTARY_PROFILE}" \
+            --wait
+    fi
 
     log_info "Stapling notarization ticket to app..."
     xcrun stapler staple "${APP_PATH}"
