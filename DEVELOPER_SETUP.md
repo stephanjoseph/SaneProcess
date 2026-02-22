@@ -73,6 +73,19 @@ xcrun notarytool store-credentials "notarytool" \
 ```
 4. Copy `.p8` file from owner to `~/.private_keys/AuthKey_S34998ZCRT.p8` (chmod 600)
 
+**Headless mini release requirements (SSH/non-interactive):**
+```bash
+export NOTARY_API_KEY_PATH="$HOME/.private_keys/AuthKey_S34998ZCRT.p8"
+export NOTARY_API_KEY_ID="S34998ZCRT"
+export NOTARY_API_ISSUER_ID="c98b1e0a-8d10-4fce-a417-536b31c09bfb"
+export SANEBAR_KEYCHAIN_PASSWORD="<your-login-keychain-password>"
+
+# Validate all release gates before building/publishing:
+cd ~/SaneApps/infra/SaneProcess/scripts
+./release.sh --project ~/SaneApps/apps/SaneHosts --preflight-only --allow-unsynced-peer --version 1.0.9
+```
+If preflight reports `Codesign cannot access signing key`, the keychain password env is missing/invalid.
+
 ---
 
 ## 3. Sparkle (Auto-Updates)
