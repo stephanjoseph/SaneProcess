@@ -1089,6 +1089,17 @@ prepare_signing_session() {
         fi
     fi
 
+    local codesign_probe
+    codesign_probe=$(/usr/bin/mktemp /tmp/codesign_probe.XXXXXX)
+    echo "sane" > "${codesign_probe}"
+    if ! /usr/bin/codesign --force --sign "${SIGNING_IDENTITY}" --timestamp=none "${codesign_probe}" >/dev/null 2>&1; then
+        rm -f "${codesign_probe}"
+        log_error "Codesign cannot access signing key in this session."
+        log_error "For headless releases, set SANEBAR_KEYCHAIN_PASSWORD (or KEYCHAIN_PASSWORD/KEYCHAIN_PASS)."
+        return 1
+    fi
+    rm -f "${codesign_probe}"
+
     return 0
 }
 
