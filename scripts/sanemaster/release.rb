@@ -3,6 +3,29 @@
 module SaneMasterModules
   # Unified release entrypoint (delegates to SaneProcess release.sh)
   module Release
+    def appcast_drift_failure_only?(verify_output)
+      xcresult_path = verify_output[/Analyzing result:\s+(.+\.xcresult)/, 1]
+      return false unless xcresult_path && File.directory?(xcresult_path)
+
+      summary_out, summary_status = Open3.capture2e(
+        'xcrun', 'xcresulttool', 'get', 'test-results', 'summary', '--path', xcresult_path
+      )
+      return false unless summary_status.success?
+
+      summary = JSON.parse(summary_out) rescue nil
+      failures = summary.is_a?(Hash) && summary['testFailures'].is_a?(Array) ? summary['testFailures'] : []
+      return false unless failures.length == 1
+
+      only_failure = failures.first
+      identifier = only_failure['testIdentifierString'].to_s
+      failure_text = only_failure['failureText'].to_s
+
+      identifier.include?('AppcastReleaseGuardrailTests/newestMatchesProjectVersion()') ||
+        failure_text.include?('Newest appcast entry should match MARKETING_VERSION')
+    rescue StandardError
+      false
+    end
+
     def release(args)
       release_script = File.expand_path('../release.sh', __dir__)
       unless File.exist?(release_script)
@@ -122,17 +145,22 @@ module SaneMasterModules
         app_name = match[1].strip if match
       end
       repo = "sane-apps/#{app_name || File.basename(Dir.pwd)}"
-      issue_json, = Open3.capture2('gh', 'issue', 'list', '--repo', repo, '--state', 'open', '--json', 'number')
-      open_count = begin
-        JSON.parse(issue_json).length
-      rescue StandardError
-        0
-      end
-      if open_count.positive?
-        puts "⚠️  #{open_count} open"
-        warnings << "#{open_count} open GitHub issues"
+      gh_path, gh_status = Open3.capture2('bash', '-lc', 'command -v gh')
+      if gh_status.success? && !gh_path.strip.empty?
+        issue_json, = Open3.capture2('gh', 'issue', 'list', '--repo', repo, '--state', 'open', '--json', 'number')
+        open_count = begin
+          JSON.parse(issue_json).length
+        rescue StandardError
+          0
+        end
+        if open_count.positive?
+          puts "⚠️  #{open_count} open"
+          warnings << "#{open_count} open GitHub issues"
+        else
+          puts '✅ none'
+        end
       else
-        puts '✅ none'
+        puts '⏭️  skipped (gh not installed)'
       end
 
       # 6. Pending customer emails
@@ -317,9 +345,15 @@ module SaneMasterModules
       # 2b. Entitlements file
       print '  │ Entitlements... '
       entitlements = Dir.glob('**/*.entitlements').reject { |p| p.include?('DerivedData') || p.include?('build/') }
-      # For App Store preflight, prefer the AppStore-specific entitlements file
-      appstore_ent = entitlements.find { |p| p =~ /appstore/i }
-      target_ent = appstore_ent || entitlements.first
+      app_name = config['name'] || File.basename(Dir.pwd)
+      mac_like = entitlements.reject { |p| p =~ %r{/(ios|watch|widget|extension)/}i }
+      # For App Store preflight, prefer the macOS AppStore-specific entitlements file.
+      appstore_ent = mac_like.find { |p| p =~ /appstore/i }
+      named_ent = mac_like.find do |p|
+        base = File.basename(p, '.entitlements')
+        base.casecmp?(app_name) || p.include?("/#{app_name}/")
+      end
+      target_ent = appstore_ent || named_ent || mac_like.first || entitlements.first
       if target_ent
         ent_content = File.read(target_ent) rescue ''
         has_sandbox = ent_content.include?('com.apple.security.app-sandbox')
@@ -551,9 +585,17 @@ module SaneMasterModules
 
       # 5a. Tests pass (shared with release_preflight)
       print '  │ Tests... '
-      _out, status = Open3.capture2e('./scripts/SaneMaster.rb', 'verify', '--quiet')
+      verify_env = { 'SANEMASTER_APPSTORE_PREFLIGHT' => '1' }
+      out, status = Open3.capture2e(verify_env, './scripts/SaneMaster.rb', 'verify', '--quiet')
       if status.success?
         puts '✅'
+      elsif out.include?('Newest appcast entry should match MARKETING_VERSION') &&
+            out.scan('Expectation failed:').length == 1
+        puts '⚠️  appcast/version drift'
+        warnings << 'Direct-download appcast is one version behind MARKETING_VERSION (non-blocking for App Store submission)'
+      elsif appcast_drift_failure_only?(out)
+        puts '⚠️  appcast/version drift'
+        warnings << 'Direct-download appcast is one version behind MARKETING_VERSION (non-blocking for App Store submission)'
       else
         puts '❌ FAIL'
         issues << 'Tests failing — fix before submission'

@@ -39,9 +39,11 @@ end
 
 # ─── Configuration ───
 
-ISSUER_ID = 'c98b1e0a-8d10-4fce-a417-536b31c09bfb'
-KEY_ID = 'S34998ZCRT'
-P8_PATH = File.expand_path('~/.private_keys/AuthKey_S34998ZCRT.p8')
+ISSUER_ID = ENV['ASC_AUTH_ISSUER_ID'] || ENV['ASC_ISSUER_ID'] || 'c98b1e0a-8d10-4fce-a417-536b31c09bfb'
+KEY_ID = ENV['ASC_AUTH_KEY_ID'] || ENV['ASC_KEY_ID'] || 'S34998ZCRT'
+P8_PATH = File.expand_path(
+  ENV['ASC_AUTH_KEY_PATH'] || ENV['ASC_KEY_PATH'] || '~/.private_keys/AuthKey_S34998ZCRT.p8'
+)
 ASC_BASE = 'https://api.appstoreconnect.apple.com/v1'
 
 PLATFORM_MAP = {
@@ -110,7 +112,7 @@ end
 
 # ─── HTTP Helpers ───
 
-def asc_request(method, path, body: nil, token: nil)
+def asc_request(method, path, body: nil, token: nil, retry_on_unauthorized: true)
   token ||= generate_jwt
   uri = URI("#{ASC_BASE}#{path}")
 
@@ -134,6 +136,17 @@ def asc_request(method, path, body: nil, token: nil)
   end
 
   response = http.request(request)
+
+  if response.code == '401' && retry_on_unauthorized
+    log_warn "ASC API #{method.upcase} #{path} returned 401; refreshing token and retrying once..."
+    return asc_request(
+      method,
+      path,
+      body: body,
+      token: generate_jwt,
+      retry_on_unauthorized: false
+    )
+  end
 
   unless response.is_a?(Net::HTTPSuccess) || response.is_a?(Net::HTTPCreated) || response.code == '409'
     log_error "ASC API #{method.upcase} #{path} → #{response.code}"
@@ -165,18 +178,76 @@ def asc_delete(path, token: nil)
   asc_request(:delete, path, token: token)
 end
 
+# ─── Package Metadata ───
+
+def extract_app_info_from_package(pkg_path)
+  read_plist = lambda do |info_path|
+    return nil unless info_path && File.exist?(info_path)
+
+    bundle_id = `"/usr/libexec/PlistBuddy" -c 'Print :CFBundleIdentifier' #{Shellwords.escape(info_path)} 2>/dev/null`.strip
+    short_version = `"/usr/libexec/PlistBuddy" -c 'Print :CFBundleShortVersionString' #{Shellwords.escape(info_path)} 2>/dev/null`.strip
+    build_number = `"/usr/libexec/PlistBuddy" -c 'Print :CFBundleVersion' #{Shellwords.escape(info_path)} 2>/dev/null`.strip
+
+    return nil if bundle_id.empty? || short_version.empty? || build_number.empty?
+
+    {
+      bundle_id: bundle_id,
+      short_version: short_version,
+      build_number: build_number
+    }
+  end
+
+  if pkg_path.end_with?('.ipa')
+    Dir.mktmpdir('asc_info_plist') do |tmpdir|
+      unzip_ok = system("unzip -qq -o #{Shellwords.escape(pkg_path)} 'Payload/*.app/Info.plist' -d #{Shellwords.escape(tmpdir)} >/dev/null 2>&1")
+      return nil unless unzip_ok
+
+      info_path = Dir.glob(File.join(tmpdir, 'Payload', '*.app', 'Info.plist')).first
+      return read_plist.call(info_path)
+    end
+  elsif pkg_path.end_with?('.pkg')
+    Dir.mktmpdir('asc_pkg_info') do |tmpdir|
+      expanded = File.join(tmpdir, 'expanded')
+      expand_ok = system('pkgutil', '--expand-full', pkg_path, expanded, out: File::NULL, err: File::NULL)
+      return nil unless expand_ok
+
+      candidates = Dir.glob(File.join(expanded, '**', 'Payload', '*.app', 'Contents', 'Info.plist'))
+      info_path = candidates.find { |p| !p.include?('/Frameworks/') && !p.include?('/PlugIns/') } || candidates.first
+      return read_plist.call(info_path)
+    end
+  end
+
+  nil
+end
+
 # ─── Upload Build ───
 
-def upload_build(pkg_path)
+def upload_build(pkg_path, app_id:, version:)
   log_info "Uploading #{File.basename(pkg_path)} via altool..."
 
-  cmd = [
-    'xcrun', 'altool', '--upload-app',
-    '-f', pkg_path,
-    '--apiKey', KEY_ID,
-    '--apiIssuer', ISSUER_ID,
-    '-t', pkg_path.end_with?('.ipa') ? 'ios' : 'macos'
-  ]
+  package_info = extract_app_info_from_package(pkg_path)
+  cmd =
+    if package_info
+      [
+        'xcrun', 'altool', '--upload-package', pkg_path,
+        '-t', pkg_path.end_with?('.ipa') ? 'ios' : 'macos',
+        '--apple-id', app_id,
+        '--bundle-id', package_info[:bundle_id],
+        '--bundle-version', package_info[:build_number],
+        '--bundle-short-version-string', package_info[:short_version],
+        '--wait',
+        '--apiKey', KEY_ID,
+        '--apiIssuer', ISSUER_ID
+      ]
+    else
+      [
+        'xcrun', 'altool', '--upload-app',
+        '-f', pkg_path,
+        '--apiKey', KEY_ID,
+        '--apiIssuer', ISSUER_ID,
+        '-t', pkg_path.end_with?('.ipa') ? 'ios' : 'macos'
+      ]
+    end
 
   output = `#{cmd.map { |c| Shellwords.escape(c) }.join(' ')} 2>&1`
   success = $?.success?
@@ -249,7 +320,7 @@ def find_editable_version(app_id, asc_platform, version_string, token)
   # READY_FOR_REVIEW still accepts metadata/screenshot updates in ASC for some flows.
   path = "/apps/#{app_id}/appStoreVersions" \
          "?filter[platform]=#{asc_platform}" \
-         "&filter[appStoreState]=PREPARE_FOR_SUBMISSION,REJECTED,READY_FOR_REVIEW"
+         "&filter[appStoreState]=PREPARE_FOR_SUBMISSION,REJECTED,DEVELOPER_REJECTED,READY_FOR_REVIEW"
   resp = asc_get(path, token: token)
 
   return nil unless resp && resp['data']
@@ -652,17 +723,34 @@ def default_build_number(version)
 end
 
 def extract_build_number_from_package(pkg_path)
-  return nil unless pkg_path.end_with?('.ipa')
+  if pkg_path.end_with?('.ipa')
+    Dir.mktmpdir('asc_info_plist') do |tmpdir|
+      unzip_ok = system("unzip -qq -o #{Shellwords.escape(pkg_path)} 'Payload/*.app/Info.plist' -d #{Shellwords.escape(tmpdir)} >/dev/null 2>&1")
+      return nil unless unzip_ok
 
-  Dir.mktmpdir('asc_info_plist') do |tmpdir|
-    unzip_ok = system("unzip -qq -o #{Shellwords.escape(pkg_path)} 'Payload/*.app/Info.plist' -d #{Shellwords.escape(tmpdir)} >/dev/null 2>&1")
-    return nil unless unzip_ok
+      info_path = Dir.glob(File.join(tmpdir, 'Payload', '*.app', 'Info.plist')).first
+      return nil unless info_path && File.exist?(info_path)
 
-    info_path = Dir.glob(File.join(tmpdir, 'Payload', '*.app', 'Info.plist')).first
-    return nil unless info_path && File.exist?(info_path)
+      bundle_version = `"/usr/libexec/PlistBuddy" -c 'Print :CFBundleVersion' #{Shellwords.escape(info_path)} 2>/dev/null`.strip
+      return bundle_version unless bundle_version.empty?
+      nil
+    end
+  elsif pkg_path.end_with?('.pkg')
+    Dir.mktmpdir('asc_pkg_info') do |tmpdir|
+      expanded = File.join(tmpdir, 'expanded')
+      expand_ok = system('pkgutil', '--expand-full', pkg_path, expanded, out: File::NULL, err: File::NULL)
+      return nil unless expand_ok
 
-    bundle_version = `"/usr/libexec/PlistBuddy" -c 'Print :CFBundleVersion' #{Shellwords.escape(info_path)} 2>/dev/null`.strip
-    bundle_version.empty? ? nil : bundle_version
+      candidates = Dir.glob(File.join(expanded, '**', 'Payload', '*.app', 'Contents', 'Info.plist'))
+      info_path = candidates.find { |p| !p.include?('/Frameworks/') && !p.include?('/PlugIns/') } || candidates.first
+      return nil unless info_path && File.exist?(info_path)
+
+      bundle_version = `"/usr/libexec/PlistBuddy" -c 'Print :CFBundleVersion' #{Shellwords.escape(info_path)} 2>/dev/null`.strip
+      return bundle_version unless bundle_version.empty?
+      nil
+    end
+  else
+    nil
   end
 end
 
@@ -763,7 +851,7 @@ token = generate_jwt
 
 # Step 1: Upload build
 unless options[:skip_upload]
-  unless upload_build(pkg_path)
+  unless upload_build(pkg_path, app_id: app_id, version: version)
     log_error 'Build upload failed. Aborting.'
     exit 1
   end

@@ -629,9 +629,15 @@ run_tests() {
         args=(-project "${XCODEPROJ}" "${args[@]}")
     fi
 
+    local appstore_build_flag="0"
+    if [ "${APPSTORE_ENABLED}" = "true" ]; then
+        appstore_build_flag="1"
+    fi
+
     if XDG_CACHE_HOME="${cache_root}" \
        CLANG_MODULE_CACHE_PATH="${clang_cache}" \
        SWIFTPM_CACHE_PATH="${swiftpm_cache}" \
+       SANEPROCESS_APPSTORE_BUILD="${appstore_build_flag}" \
        xcodebuild "${args[@]}"; then
         log_info "All tests passed"
     else
@@ -1145,6 +1151,33 @@ resolve_notary_auth() {
     return 1
 }
 
+prepare_xcode_provisioning_auth() {
+    XCODE_PROVISIONING_AUTH_ARGS=()
+
+    local key_path="${ASC_AUTH_KEY_PATH}"
+    local key_id="${ASC_AUTH_KEY_ID}"
+    local issuer_id="${ASC_AUTH_ISSUER_ID}"
+
+    if [ -z "${key_path}" ] || [ -z "${key_id}" ] || [ -z "${issuer_id}" ]; then
+        log_warn "ASC auth key values incomplete; xcodebuild will use interactive account auth."
+        return 0
+    fi
+
+    if [ ! -f "${key_path}" ]; then
+        log_warn "ASC auth key not found at ${key_path}; xcodebuild will use interactive account auth."
+        return 0
+    fi
+
+    XCODE_PROVISIONING_AUTH_ARGS=(
+        -authenticationKeyPath "${key_path}"
+        -authenticationKeyID "${key_id}"
+        -authenticationKeyIssuerID "${issuer_id}"
+    )
+
+    log_info "Using ASC API key auth for provisioning updates."
+    return 0
+}
+
 check_version_bump_gate() {
     if [ -n "${VERSION_BUMP_CMD}" ]; then
         if [ ${#VERSION_BUMP_FILES[@]} -eq 0 ]; then
@@ -1389,6 +1422,9 @@ NOTARY_API_KEY_PATH="${NOTARY_API_KEY_PATH:-}"
 NOTARY_API_KEY_ID="${NOTARY_API_KEY_ID:-}"
 NOTARY_API_ISSUER_ID="${NOTARY_API_ISSUER_ID:-}"
 NOTARY_AUTH_MODE=""
+ASC_AUTH_KEY_PATH="${ASC_AUTH_KEY_PATH:-${HOME}/.private_keys/AuthKey_S34998ZCRT.p8}"
+ASC_AUTH_KEY_ID="${ASC_AUTH_KEY_ID:-S34998ZCRT}"
+ASC_AUTH_ISSUER_ID="${ASC_AUTH_ISSUER_ID:-c98b1e0a-8d10-4fce-a417-536b31c09bfb}"
 GITHUB_REPO="${GITHUB_REPO:-sane-apps/${APP_NAME}}"
 HOMEBREW_TAP_REPO="${HOMEBREW_TAP_REPO:-sane-apps/homebrew-tap}"
 XCODEGEN="${XCODEGEN:-false}"
@@ -1424,6 +1460,9 @@ fi
 if ! declare -p VERSION_BUMP_FILES >/dev/null 2>&1; then
     VERSION_BUMP_FILES=("project.yml")
 fi
+if ! declare -p XCODE_PROVISIONING_AUTH_ARGS >/dev/null 2>&1; then
+    XCODE_PROVISIONING_AUTH_ARGS=()
+fi
 
 WORKSPACE="$(resolve_path "${WORKSPACE}")"
 XCODEPROJ="$(resolve_path "${XCODEPROJ}")"
@@ -1432,6 +1471,7 @@ DMG_FILE_ICON="$(resolve_path "${DMG_FILE_ICON}")"
 DMG_VOLUME_ICON="$(resolve_path "${DMG_VOLUME_ICON}")"
 DMG_BACKGROUND="$(resolve_path "${DMG_BACKGROUND}")"
 DMG_BACKGROUND_GENERATOR="$(resolve_path "${DMG_BACKGROUND_GENERATOR}")"
+ASC_AUTH_KEY_PATH="$(resolve_path "${ASC_AUTH_KEY_PATH}")"
 # Resolve helper scripts: check project first, fall back to SaneProcess scripts dir
 SANEPROCESS_SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -z "${SIGN_UPDATE_SCRIPT}" ]; then
@@ -1666,6 +1706,10 @@ if ! resolve_notary_auth; then
     exit 1
 fi
 
+if ! prepare_xcode_provisioning_auth; then
+    exit 1
+fi
+
 if [ "${NOTARY_AUTH_MODE}" = "api-key" ]; then
     log_info "Using notarytool API key fallback auth."
 elif [ "${NOTARY_AUTH_MODE}" = "keychain-profile" ]; then
@@ -1722,6 +1766,8 @@ xcodebuild -exportArchive \
     -archivePath "${ARCHIVE_PATH}" \
     -exportPath "${EXPORT_PATH}" \
     -exportOptionsPlist "${EXPORT_OPTIONS_PATH}" \
+    -allowProvisioningUpdates \
+    "${XCODE_PROVISIONING_AUTH_ARGS[@]}" \
     2>&1 | tee -a "${BUILD_DIR}/build.log"
 
 if [ ${PIPESTATUS[0]} -ne 0 ]; then
@@ -1786,6 +1832,9 @@ if [ "${APPSTORE_ENABLED}" = "true" ] && [ "${SKIP_APPSTORE}" = false ]; then
             -archivePath "${APPSTORE_ARCHIVE}" \
             -destination "generic/platform=macOS" OTHER_CODE_SIGN_FLAGS="--timestamp" \
             -allowProvisioningUpdates)
+        if [ ${#XCODE_PROVISIONING_AUTH_ARGS[@]} -gt 0 ]; then
+            appstore_archive_args+=("${XCODE_PROVISIONING_AUTH_ARGS[@]}")
+        fi
         if [ -n "${WORKSPACE}" ]; then
             appstore_archive_args=(-workspace "${WORKSPACE}" "${appstore_archive_args[@]}")
         elif [ -n "${XCODEPROJ}" ]; then
@@ -1848,6 +1897,8 @@ if [ "${APPSTORE_ENABLED}" = "true" ] && [ "${SKIP_APPSTORE}" = false ]; then
         -archivePath "${APPSTORE_ARCHIVE}" \
         -exportPath "${APPSTORE_EXPORT_PATH}" \
         -exportOptionsPlist "${APPSTORE_PLIST}" \
+        -allowProvisioningUpdates \
+        "${XCODE_PROVISIONING_AUTH_ARGS[@]}" \
         2>&1 | tee -a "${BUILD_DIR}/build.log"
 
     if [ ${PIPESTATUS[0]} -ne 0 ]; then
@@ -2288,7 +2339,11 @@ PY
             IOS_ARCHIVE="${BUILD_DIR}/${APP_NAME}-iOS.xcarchive"
             ios_args=(archive -scheme "${IOS_SCHEME}" -configuration Release \
                       -archivePath "${IOS_ARCHIVE}" \
-                      -destination "generic/platform=iOS")
+                      -destination "generic/platform=iOS" \
+                      -allowProvisioningUpdates)
+            if [ ${#XCODE_PROVISIONING_AUTH_ARGS[@]} -gt 0 ]; then
+                ios_args+=("${XCODE_PROVISIONING_AUTH_ARGS[@]}")
+            fi
             [ -n "${XCODEPROJ}" ] && ios_args=(-project "${XCODEPROJ}" "${ios_args[@]}")
             xcodebuild "${ios_args[@]}" 2>&1 | tee -a "${BUILD_DIR}/build.log"
 
@@ -2301,6 +2356,8 @@ PY
                     -archivePath "${IOS_ARCHIVE}" \
                     -exportPath "${IOS_EXPORT}" \
                     -exportOptionsPlist "${APPSTORE_PLIST}" \
+                    -allowProvisioningUpdates \
+                    "${XCODE_PROVISIONING_AUTH_ARGS[@]}" \
                     2>&1 | tee -a "${BUILD_DIR}/build.log"
 
                 IOS_IPA="${IOS_EXPORT}/${APP_NAME}.ipa"
