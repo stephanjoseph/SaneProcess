@@ -269,14 +269,27 @@ version = sys.argv[1]
 build = sys.argv[2]
 
 def matches_item(item: str) -> bool:
-    if version and f'sparkle:shortVersionString="{version}"' in item:
-        return True
-    if build and f'sparkle:version="{build}"' in item:
-        return True
-    if version and re.search(rf"<sparkle:shortVersionString>\s*{re.escape(version)}\s*</sparkle:shortVersionString>", item):
-        return True
-    if build and re.search(rf"<sparkle:version>\s*{re.escape(build)}\s*</sparkle:version>", item):
-        return True
+    version_match = False
+    build_match = False
+
+    if version:
+        if f'sparkle:shortVersionString="{version}"' in item:
+            version_match = True
+        elif re.search(rf"<sparkle:shortVersionString>\s*{re.escape(version)}\s*</sparkle:shortVersionString>", item):
+            version_match = True
+
+    if build:
+        if f'sparkle:version="{build}"' in item:
+            build_match = True
+        elif re.search(rf"<sparkle:version>\s*{re.escape(build)}\s*</sparkle:version>", item):
+            build_match = True
+
+    if version and build:
+        return version_match and build_match
+    if version:
+        return version_match
+    if build:
+        return build_match
     return False
 
 count = 0
@@ -301,14 +314,27 @@ version = sys.argv[1]
 build = sys.argv[2]
 
 def matches_item(item: str) -> bool:
-    if f'sparkle:shortVersionString="{version}"' in item:
-        return True
-    if f'sparkle:version="{build}"' in item:
-        return True
-    if re.search(rf"<sparkle:shortVersionString>\s*{re.escape(version)}\s*</sparkle:shortVersionString>", item):
-        return True
-    if re.search(rf"<sparkle:version>\s*{re.escape(build)}\s*</sparkle:version>", item):
-        return True
+    version_match = False
+    build_match = False
+
+    if version:
+        if f'sparkle:shortVersionString="{version}"' in item:
+            version_match = True
+        elif re.search(rf"<sparkle:shortVersionString>\s*{re.escape(version)}\s*</sparkle:shortVersionString>", item):
+            version_match = True
+
+    if build:
+        if f'sparkle:version="{build}"' in item:
+            build_match = True
+        elif re.search(rf"<sparkle:version>\s*{re.escape(build)}\s*</sparkle:version>", item):
+            build_match = True
+
+    if version and build:
+        return version_match and build_match
+    if version:
+        return version_match
+    if build:
+        return build_match
     return False
 
 for match in re.finditer(r"<item>.*?</item>", xml, flags=re.S):
@@ -341,14 +367,27 @@ with open(path, "r", encoding="utf-8") as f:
     xml = f.read()
 
 def matches_item(item: str) -> bool:
-    if f'sparkle:shortVersionString="{version}"' in item:
-        return True
-    if f'sparkle:version="{build}"' in item:
-        return True
-    if re.search(rf"<sparkle:shortVersionString>\s*{re.escape(version)}\s*</sparkle:shortVersionString>", item):
-        return True
-    if re.search(rf"<sparkle:version>\s*{re.escape(build)}\s*</sparkle:version>", item):
-        return True
+    version_match = False
+    build_match = False
+
+    if version:
+        if f'sparkle:shortVersionString="{version}"' in item:
+            version_match = True
+        elif re.search(rf"<sparkle:shortVersionString>\s*{re.escape(version)}\s*</sparkle:shortVersionString>", item):
+            version_match = True
+
+    if build:
+        if f'sparkle:version="{build}"' in item:
+            build_match = True
+        elif re.search(rf"<sparkle:version>\s*{re.escape(build)}\s*</sparkle:version>", item):
+            build_match = True
+
+    if version and build:
+        return version_match and build_match
+    if version:
+        return version_match
+    if build:
+        return build_match
     return False
 
 removed = 0
@@ -1672,6 +1711,28 @@ check_sparkle_signing_gate() {
     return 0
 }
 
+check_deploy_version_alignment_gate() {
+    if [ "${RUN_DEPLOY}" != true ] || [ "${FULL_RELEASE}" = true ] || [ -z "${VERSION}" ]; then
+        return 0
+    fi
+
+    local current_version
+    current_version="$(detect_project_marketing_version || true)"
+
+    if [ -z "${current_version}" ]; then
+        log_warn "Could not detect project MARKETING_VERSION; skipping deploy-version alignment gate."
+        return 0
+    fi
+
+    if [ "${current_version}" != "${VERSION}" ]; then
+        log_error "Deploy version mismatch: project is ${current_version}, requested ${VERSION}."
+        log_error "Run --full --version ${VERSION} (recommended) or bump project version first."
+        return 1
+    fi
+
+    return 0
+}
+
 check_live_appcast_republish_gate() {
     if [ "${RUN_DEPLOY}" != true ] || [ "${USE_SPARKLE}" != "true" ]; then
         return 0
@@ -1751,6 +1812,7 @@ run_release_preflight_only() {
     run_gate "Notarization authentication" resolve_notary_auth
     run_gate "ASC provisioning authentication" prepare_xcode_provisioning_auth
     run_gate "App Store configuration" check_appstore_gate
+    run_gate "Deploy version alignment" check_deploy_version_alignment_gate
     run_gate "Live appcast republish guard" check_live_appcast_republish_gate
     run_gate "Sparkle signing prerequisites" check_sparkle_signing_gate
 
@@ -2157,6 +2219,10 @@ if [ "${FULL_RELEASE}" = true ]; then
 fi
 
 # Fail fast for deploy-time appcast/version/signature blockers before cleanup/build.
+if ! check_deploy_version_alignment_gate; then
+    exit 1
+fi
+
 if ! check_live_appcast_republish_gate; then
     exit 1
 fi
@@ -2358,8 +2424,7 @@ if [ "${APPSTORE_ENABLED}" = "true" ] && [ "${SKIP_APPSTORE}" = false ]; then
                     if binary_has_strong_sparkle_load "${ARCHIVE_BINARY}"; then
                         log_info "Weakening Sparkle dylib reference in App Store binary..."
                         if ! ruby "${SCRIPT_DIR}/weaken_sparkle.rb" "${ARCHIVE_BINARY}"; then
-                            log_error "Failed to weaken Sparkle reference. App Store build may crash on launch."
-                            exit 1
+                            log_warn "Failed to weaken Sparkle reference; continuing to dylib preflight validation."
                         fi
                     else
                         log_info "Sparkle dylib already weak-linked in App Store binary."
@@ -2818,7 +2883,7 @@ PY
         log_info "  SUBMITTING TO APP STORE"
         log_info "═══════════════════════════════════════════"
 
-        APPSTORE_SCRIPT="$(dirname "$0")/appstore_submit.rb"
+        APPSTORE_SCRIPT="${SCRIPT_DIR}/appstore_submit.rb"
 
         if [ ! -f "${APPSTORE_SCRIPT}" ]; then
             log_error "appstore_submit.rb not found at ${APPSTORE_SCRIPT}"
