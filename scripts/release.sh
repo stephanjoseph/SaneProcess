@@ -30,7 +30,7 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
-SECRETS_ENV_FILE="${HOME}/.config/saneprocess/secrets.env"
+SECRETS_ENV_FILE="${SECRETS_ENV_FILE:-${HOME}/.config/saneprocess/secrets.env}"
 
 EXPLICIT_SANEBAR_KEYCHAIN_PASSWORD_SET=0
 EXPLICIT_KEYCHAIN_PASSWORD_SET=0
@@ -41,6 +41,7 @@ EXPLICIT_ASC_AUTH_KEY_PATH_SET=0
 EXPLICIT_NOTARY_API_KEY_ID_SET=0
 EXPLICIT_NOTARY_API_ISSUER_ID_SET=0
 EXPLICIT_NOTARY_API_KEY_PATH_SET=0
+EXPLICIT_SPARKLE_PRIVATE_KEY_SET=0
 
 EXPLICIT_SANEBAR_KEYCHAIN_PASSWORD=""
 EXPLICIT_KEYCHAIN_PASSWORD=""
@@ -51,6 +52,7 @@ EXPLICIT_ASC_AUTH_KEY_PATH=""
 EXPLICIT_NOTARY_API_KEY_ID=""
 EXPLICIT_NOTARY_API_ISSUER_ID=""
 EXPLICIT_NOTARY_API_KEY_PATH=""
+EXPLICIT_SPARKLE_PRIVATE_KEY=""
 
 capture_explicit_secret_env() {
     if [ "${SANEBAR_KEYCHAIN_PASSWORD+x}" = "x" ] && [ -n "${SANEBAR_KEYCHAIN_PASSWORD}" ]; then
@@ -89,6 +91,10 @@ capture_explicit_secret_env() {
         EXPLICIT_NOTARY_API_KEY_PATH_SET=1
         EXPLICIT_NOTARY_API_KEY_PATH="${NOTARY_API_KEY_PATH}"
     fi
+    if [ "${SPARKLE_PRIVATE_KEY+x}" = "x" ] && [ -n "${SPARKLE_PRIVATE_KEY}" ]; then
+        EXPLICIT_SPARKLE_PRIVATE_KEY_SET=1
+        EXPLICIT_SPARKLE_PRIVATE_KEY="${SPARKLE_PRIVATE_KEY}"
+    fi
 }
 
 has_explicit_secret_value() {
@@ -102,6 +108,7 @@ has_explicit_secret_value() {
         NOTARY_API_KEY_ID) [ "${EXPLICIT_NOTARY_API_KEY_ID_SET}" -eq 1 ] ;;
         NOTARY_API_ISSUER_ID) [ "${EXPLICIT_NOTARY_API_ISSUER_ID_SET}" -eq 1 ] ;;
         NOTARY_API_KEY_PATH) [ "${EXPLICIT_NOTARY_API_KEY_PATH_SET}" -eq 1 ] ;;
+        SPARKLE_PRIVATE_KEY) [ "${EXPLICIT_SPARKLE_PRIVATE_KEY_SET}" -eq 1 ] ;;
         *) return 1 ;;
     esac
 }
@@ -117,6 +124,7 @@ explicit_secret_value_for() {
         NOTARY_API_KEY_ID) printf '%s' "${EXPLICIT_NOTARY_API_KEY_ID}" ;;
         NOTARY_API_ISSUER_ID) printf '%s' "${EXPLICIT_NOTARY_API_ISSUER_ID}" ;;
         NOTARY_API_KEY_PATH) printf '%s' "${EXPLICIT_NOTARY_API_KEY_PATH}" ;;
+        SPARKLE_PRIVATE_KEY) printf '%s' "${EXPLICIT_SPARKLE_PRIVATE_KEY}" ;;
         *) printf '' ;;
     esac
 }
@@ -1564,9 +1572,16 @@ detect_project_build_number() {
 }
 
 resolve_sparkle_private_key() {
-    local key_value="${SPARKLE_PRIVATE_KEY:-}"
+    local key_value=""
+
+    if has_explicit_secret_value "SPARKLE_PRIVATE_KEY"; then
+        key_value="$(explicit_secret_value_for "SPARKLE_PRIVATE_KEY")"
+    else
+        key_value="${SPARKLE_PRIVATE_KEY:-}"
+    fi
 
     if [ -n "${key_value}" ]; then
+        set_secret_env_var "SPARKLE_PRIVATE_KEY" "${key_value}"
         printf '%s' "${key_value}"
         return 0
     fi
@@ -1585,6 +1600,33 @@ resolve_sparkle_private_key() {
     return 0
 }
 
+derive_sparkle_public_key() {
+    local sparkle_private_key="$1"
+
+    if [ -z "${sparkle_private_key}" ]; then
+        return 1
+    fi
+
+    SPARKLE_PRIVATE_KEY_INPUT="${sparkle_private_key}" swift -e '
+import Foundation
+import CryptoKit
+
+guard let keyBase64 = ProcessInfo.processInfo.environment["SPARKLE_PRIVATE_KEY_INPUT"],
+      let keyData = Data(base64Encoded: keyBase64) else {
+    fputs("invalid private key\n", stderr)
+    exit(2)
+}
+
+do {
+    let key = try Curve25519.Signing.PrivateKey(rawRepresentation: keyData)
+    print(key.publicKey.rawRepresentation.base64EncodedString())
+} catch {
+    fputs("unable to derive public key\n", stderr)
+    exit(3)
+}
+' 2>/dev/null
+}
+
 check_sparkle_signing_gate() {
     if [ "${RUN_DEPLOY}" != true ] || [ "${USE_SPARKLE}" != "true" ]; then
         return 0
@@ -1600,11 +1642,30 @@ check_sparkle_signing_gate() {
         return 1
     fi
 
-    if ! resolve_sparkle_private_key >/dev/null 2>&1; then
+    local sparkle_private_key
+    sparkle_private_key="$(resolve_sparkle_private_key || true)"
+    if [ -z "${sparkle_private_key}" ]; then
         log_error "Sparkle private key is missing; deploy would skip appcast update and fail later."
         log_error "Set SPARKLE_PRIVATE_KEY (env or ${SECRETS_ENV_FILE}) or seed keychain with:"
         log_error "  security add-generic-password -U -a \"EdDSA Private Key\" -s \"https://sparkle-project.org\" -w '<private_key>'"
         log_error "Optional keychain service also supported: saneprocess.sparkle.private_key"
+        return 1
+    fi
+
+    local expected_public_key="7Pl/8cwfb2vm4Dm65AByslkMCScLJ9tbGlwGGx81qYU="
+    local derived_public_key
+    derived_public_key="$(derive_sparkle_public_key "${sparkle_private_key}" || true)"
+
+    if [ -z "${derived_public_key}" ]; then
+        log_error "Could not derive Sparkle public key from private key."
+        return 1
+    fi
+
+    if [ "${derived_public_key}" != "${expected_public_key}" ]; then
+        log_error "Sparkle private/public key mismatch."
+        log_error "  Expected: ${expected_public_key}"
+        log_error "  Derived:  ${derived_public_key}"
+        log_error "Wrong Sparkle key would break auto-updates for existing customers."
         return 1
     fi
 
