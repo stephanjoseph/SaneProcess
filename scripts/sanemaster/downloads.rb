@@ -25,5 +25,16 @@ module SaneMasterModules
         system('python3', dl_report, *args)
       end
     end
+
+    def events(args)
+      dl_report = File.join(__dir__, '..', 'automation', 'dl-report.py')
+
+      unless File.exist?(dl_report)
+        puts "❌ dl-report.py not found at #{dl_report}"
+        exit 1
+      end
+
+      system('python3', dl_report, '--events', *args)
+    end
   end
 end

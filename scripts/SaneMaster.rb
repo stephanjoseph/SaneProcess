@@ -153,7 +153,8 @@ class SaneMaster
       desc: 'Sales and revenue reporting',
       commands: {
         'sales' => { args: '[--daily|--month|--products|--fees|--json]', desc: 'LemonSqueezy sales report (default: daily breakdown)' },
-        'downloads' => { args: '[--daily|--days N|--app NAME|--json]', desc: 'Download analytics from dist Worker (default: daily breakdown)' }
+        'downloads' => { args: '[--daily|--days N|--app NAME|--json]', desc: 'Download analytics from dist Worker (default: daily breakdown)' },
+        'events' => { args: '[--days N|--app NAME|--json]', desc: 'User-type event analytics (new_free, early_adopter, activated)' }
       }
     },
     ci: {
@@ -421,6 +422,8 @@ class SaneMaster
       sales(args)
     when 'downloads', 'dl'
       downloads(args)
+    when 'events'
+      events(args)
 
     # CI Helpers
     when 'enable_ci_tests'
@@ -904,6 +907,20 @@ class SaneMaster
         'downloads --days 7       # Last 7 days',
         'downloads --app sanebar  # Filter to SaneBar',
         'downloads --json         # Raw JSON'
+      ]
+    },
+    'events' => {
+      usage: 'events [--days N|--app NAME|--json]',
+      description: 'User-type event analytics (new free users, early adopter grants, license activations).',
+      flags: {
+        '--days N' => 'Look back N days (default: 90)',
+        '--app NAME' => 'Filter by app name (e.g. sanebar)',
+        '--json' => 'Raw JSON output for piping'
+      },
+      examples: [
+        'events                   # Event breakdown by period',
+        'events --days 7          # Last 7 days of events',
+        'events --app sanebar     # SaneBar events only'
       ]
     },
     'enable_ci_tests' => {

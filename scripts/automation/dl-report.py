@@ -134,26 +134,76 @@ def print_by_version(rows):
         print(f"{key:<25} {v['count']:>7} {v['source'].get('sparkle', 0):>9} {v['source'].get('website', 0):>9}")
 
 
+def print_events(events, window_days=90):
+    """User-type event breakdown: Today / Yesterday / This Week / Window."""
+    from datetime import timedelta, timezone
+    now = datetime.now(timezone.utc)
+    today = now.strftime("%Y-%m-%d")
+    yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    week_dates = set((now - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7))
+    window_label = f"Last {window_days}d"
+
+    event_types = ["new_free_user", "early_adopter_grant", "license_activated"]
+    buckets = {
+        "Today": defaultdict(int),
+        "Yesterday": defaultdict(int),
+        "This Week": defaultdict(int),
+        window_label: defaultdict(int),
+    }
+
+    for r in events:
+        count = r["count"]
+        event = r["event"]
+        date = r["date"]
+
+        buckets[window_label][event] += count
+        if date in week_dates:
+            buckets["This Week"][event] += count
+        if date == today:
+            buckets["Today"][event] += count
+        elif date == yesterday:
+            buckets["Yesterday"][event] += count
+
+    print(f"\nUser Events — {today}")
+    print(f"{'Period':<15} {'New Free':>10} {'Early Adopter':>15} {'Activated':>11}")
+    print("-" * 55)
+    for name in ["Today", "Yesterday", "This Week", window_label]:
+        b = buckets[name]
+        print(f"{name:<15} {b.get('new_free_user', 0):>10} {b.get('early_adopter_grant', 0):>15} {b.get('license_activated', 0):>11}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="SaneApps download analytics report")
     parser.add_argument("--daily", action="store_true", help="Today/yesterday/week/all-time breakdown")
     parser.add_argument("--days", type=int, default=90, help="Look back N days (default: 90)")
     parser.add_argument("--app", type=str, help="Filter by app name (e.g. sanebar)")
     parser.add_argument("--json", action="store_true", help="Raw JSON output")
+    parser.add_argument("--events", action="store_true", help="Show user-type events only")
     args = parser.parse_args()
 
     api_key = get_api_key()
     data = fetch_stats(api_key, days=args.days, app=args.app)
 
-    rows = data.get("rows", [])
-    if not rows:
-        print("No download data found for the selected period.")
-        sys.exit(0)
-
     if args.json:
         json.dump(data, sys.stdout, indent=2)
         print()
         return
+
+    events = data.get("events", [])
+
+    if args.events:
+        if not events:
+            print("No event data found for the selected period.")
+            sys.exit(0)
+        app_label = args.app or "all apps"
+        print(f"Event Analytics — {app_label} — {datetime.now().strftime('%Y-%m-%d')}")
+        print_events(events, window_days=args.days)
+        return
+
+    rows = data.get("rows", [])
+    if not rows:
+        print("No download data found for the selected period.")
+        sys.exit(0)
 
     # Header
     app_label = args.app or "all apps"
@@ -162,9 +212,13 @@ def main():
 
     if args.daily:
         print_daily(rows, window_days=args.days)
+        if events:
+            print_events(events, window_days=args.days)
     else:
         print_by_app(rows)
         print_by_version(rows)
+        if events:
+            print_events(events, window_days=args.days)
 
 
 if __name__ == "__main__":
