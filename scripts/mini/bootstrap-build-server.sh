@@ -48,12 +48,35 @@ fail() {
 
 keychain_get() {
     local service="$1"
-    security find-generic-password -s "${service}" -w 2>/dev/null || true
+    local value=""
+    value=$(security find-generic-password -s "${service}" -w 2>/dev/null || true)
+    if [ -n "${value}" ]; then
+        printf '%s' "${value}"
+        return 0
+    fi
+
+    if [ "${service}" = "saneprocess.sparkle.private_key" ]; then
+        value=$(security find-generic-password -s "https://sparkle-project.org" -a "EdDSA Private Key" -w 2>/dev/null || true)
+        if [ -n "${value}" ]; then
+            printf '%s' "${value}"
+            return 0
+        fi
+    fi
+
+    return 0
 }
 
 keychain_has() {
     local service="$1"
-    security find-generic-password -s "${service}" -w >/dev/null 2>&1
+    if security find-generic-password -s "${service}" -w >/dev/null 2>&1; then
+        return 0
+    fi
+
+    if [ "${service}" = "saneprocess.sparkle.private_key" ] && security find-generic-password -s "https://sparkle-project.org" -a "EdDSA Private Key" -w >/dev/null 2>&1; then
+        return 0
+    fi
+
+    return 1
 }
 
 env_key_for_service() {
@@ -65,6 +88,7 @@ env_key_for_service() {
         saneprocess.notary.key_id) echo "NOTARY_API_KEY_ID" ;;
         saneprocess.notary.issuer_id) echo "NOTARY_API_ISSUER_ID" ;;
         saneprocess.notary.key_path) echo "NOTARY_API_KEY_PATH" ;;
+        saneprocess.sparkle.private_key) echo "SPARKLE_PRIVATE_KEY" ;;
         *) echo "" ;;
     esac
 }
@@ -78,6 +102,7 @@ service_for_env_key() {
         NOTARY_API_KEY_ID) echo "saneprocess.notary.key_id" ;;
         NOTARY_API_ISSUER_ID) echo "saneprocess.notary.issuer_id" ;;
         NOTARY_API_KEY_PATH) echo "saneprocess.notary.key_path" ;;
+        SPARKLE_PRIVATE_KEY) echo "saneprocess.sparkle.private_key" ;;
         *) echo "" ;;
     esac
 }
@@ -97,6 +122,9 @@ default_for_service() {
         saneprocess.asc.key_path|saneprocess.notary.key_path)
             echo "${default_key_path}"
             ;;
+        saneprocess.sparkle.private_key)
+            echo "${SPARKLE_PRIVATE_KEY:-}"
+            ;;
         *)
             echo ""
             ;;
@@ -105,7 +133,7 @@ default_for_service() {
 
 secret_mode_for_service() {
     case "$1" in
-        saneprocess.keychain.password) echo "true" ;;
+        saneprocess.keychain.password|saneprocess.sparkle.private_key) echo "true" ;;
         *) echo "false" ;;
     esac
 }
@@ -246,7 +274,8 @@ write_secrets_env_file() {
         ASC_AUTH_KEY_PATH \
         NOTARY_API_KEY_ID \
         NOTARY_API_ISSUER_ID \
-        NOTARY_API_KEY_PATH; do
+        NOTARY_API_KEY_PATH \
+        SPARKLE_PRIVATE_KEY; do
         service="$(service_for_env_key "${env_key}")"
         if [ -z "${service}" ]; then
             rm -f "${tmp_file}"
@@ -289,6 +318,7 @@ saneprocess.asc.key_path
 saneprocess.notary.key_id
 saneprocess.notary.issuer_id
 saneprocess.notary.key_path
+saneprocess.sparkle.private_key
 SERVICES
 }
 
@@ -445,6 +475,7 @@ check_keychain_service "saneprocess.asc.key_path" "${REPO_ROOT}/scripts/mini/boo
 check_keychain_service "saneprocess.notary.key_id" "${REPO_ROOT}/scripts/mini/bootstrap-build-server.sh --export-env-file"
 check_keychain_service "saneprocess.notary.issuer_id" "${REPO_ROOT}/scripts/mini/bootstrap-build-server.sh --export-env-file"
 check_keychain_service "saneprocess.notary.key_path" "${REPO_ROOT}/scripts/mini/bootstrap-build-server.sh --export-env-file"
+check_keychain_service "saneprocess.sparkle.private_key" "${REPO_ROOT}/scripts/mini/bootstrap-build-server.sh --export-env-file"
 
 # 3) Headless codesign probe
 check_codesign_probe

@@ -245,7 +245,13 @@ extract_content_length() {
 
 appcast_item_count_for_version() {
     local appcast_content="$1"
-    APPCAST_CONTENT="${appcast_content}" python3 - "${VERSION}" "${BUILD_NUMBER}" <<'PY'
+    local version="${2:-${VERSION:-}}"
+    local build="${3:-${BUILD_NUMBER:-}}"
+    if [ -z "${version}" ] && [ -z "${build}" ]; then
+        echo "0"
+        return 0
+    fi
+    APPCAST_CONTENT="${appcast_content}" python3 - "${version}" "${build}" <<'PY'
 import os
 import re
 import sys
@@ -255,13 +261,13 @@ version = sys.argv[1]
 build = sys.argv[2]
 
 def matches_item(item: str) -> bool:
-    if f'sparkle:shortVersionString="{version}"' in item:
+    if version and f'sparkle:shortVersionString="{version}"' in item:
         return True
-    if f'sparkle:version="{build}"' in item:
+    if build and f'sparkle:version="{build}"' in item:
         return True
-    if re.search(rf"<sparkle:shortVersionString>\s*{re.escape(version)}\s*</sparkle:shortVersionString>", item):
+    if version and re.search(rf"<sparkle:shortVersionString>\s*{re.escape(version)}\s*</sparkle:shortVersionString>", item):
         return True
-    if re.search(rf"<sparkle:version>\s*{re.escape(build)}\s*</sparkle:version>", item):
+    if build and re.search(rf"<sparkle:version>\s*{re.escape(build)}\s*</sparkle:version>", item):
         return True
     return False
 
@@ -1483,6 +1489,182 @@ check_appstore_gate() {
     return 0
 }
 
+detect_project_marketing_version() {
+    local project_yml="${PROJECT_ROOT}/project.yml"
+    local pbxproj=""
+    local xcconfig=""
+    local detected=""
+
+    if [ -f "${project_yml}" ]; then
+        detected=$(grep -E 'MARKETING_VERSION:[[:space:]]*"?[0-9]+(\.[0-9]+)+"?' "${project_yml}" 2>/dev/null | head -1 | sed -E 's/.*MARKETING_VERSION:[[:space:]]*"?([0-9]+(\.[0-9]+)+)"?.*/\1/')
+        if [ -n "${detected}" ]; then
+            printf '%s' "${detected}"
+            return 0
+        fi
+    fi
+
+    for pbxproj in "${PROJECT_ROOT}"/*.xcodeproj/project.pbxproj; do
+        if [ -f "${pbxproj}" ]; then
+            detected=$(grep -E 'MARKETING_VERSION = [0-9]+(\.[0-9]+)+;' "${pbxproj}" 2>/dev/null | head -1 | sed -E 's/.*MARKETING_VERSION = ([0-9]+(\.[0-9]+)+);.*/\1/')
+            if [ -n "${detected}" ]; then
+                printf '%s' "${detected}"
+                return 0
+            fi
+            break
+        fi
+    done
+
+    while IFS= read -r xcconfig; do
+        [ -f "${xcconfig}" ] || continue
+        detected=$(grep -E '^[[:space:]]*MARKETING_VERSION[[:space:]]*=[[:space:]]*[0-9]+(\.[0-9]+)+' "${xcconfig}" 2>/dev/null | head -1 | sed -E 's/^[[:space:]]*MARKETING_VERSION[[:space:]]*=[[:space:]]*([0-9]+(\.[0-9]+)+).*/\1/')
+        if [ -n "${detected}" ]; then
+            printf '%s' "${detected}"
+            return 0
+        fi
+    done < <(find "${PROJECT_ROOT}" -maxdepth 4 -name '*.xcconfig' 2>/dev/null | sort)
+
+    return 1
+}
+
+detect_project_build_number() {
+    local project_yml="${PROJECT_ROOT}/project.yml"
+    local pbxproj=""
+    local xcconfig=""
+    local detected=""
+
+    if [ -f "${project_yml}" ]; then
+        detected=$(grep -E 'CURRENT_PROJECT_VERSION:[[:space:]]*"?[0-9]+' "${project_yml}" 2>/dev/null | head -1 | sed -E 's/.*CURRENT_PROJECT_VERSION:[[:space:]]*"?([0-9]+)"?.*/\1/')
+        if [ -n "${detected}" ]; then
+            printf '%s' "${detected}"
+            return 0
+        fi
+    fi
+
+    for pbxproj in "${PROJECT_ROOT}"/*.xcodeproj/project.pbxproj; do
+        if [ -f "${pbxproj}" ]; then
+            detected=$(grep -E 'CURRENT_PROJECT_VERSION = [0-9]+;' "${pbxproj}" 2>/dev/null | head -1 | sed -E 's/.*CURRENT_PROJECT_VERSION = ([0-9]+);.*/\1/')
+            if [ -n "${detected}" ]; then
+                printf '%s' "${detected}"
+                return 0
+            fi
+            break
+        fi
+    done
+
+    while IFS= read -r xcconfig; do
+        [ -f "${xcconfig}" ] || continue
+        detected=$(grep -E '^[[:space:]]*CURRENT_PROJECT_VERSION[[:space:]]*=[[:space:]]*[0-9]+' "${xcconfig}" 2>/dev/null | head -1 | sed -E 's/^[[:space:]]*CURRENT_PROJECT_VERSION[[:space:]]*=[[:space:]]*([0-9]+).*/\1/')
+        if [ -n "${detected}" ]; then
+            printf '%s' "${detected}"
+            return 0
+        fi
+    done < <(find "${PROJECT_ROOT}" -maxdepth 4 -name '*.xcconfig' 2>/dev/null | sort)
+
+    return 1
+}
+
+resolve_sparkle_private_key() {
+    local key_value="${SPARKLE_PRIVATE_KEY:-}"
+
+    if [ -n "${key_value}" ]; then
+        printf '%s' "${key_value}"
+        return 0
+    fi
+
+    key_value="$(keychain_get_service_value "saneprocess.sparkle.private_key")"
+    if [ -z "${key_value}" ] && command -v security >/dev/null 2>&1; then
+        key_value=$(security find-generic-password -w -s "https://sparkle-project.org" -a "EdDSA Private Key" 2>/dev/null || true)
+    fi
+
+    if [ -z "${key_value}" ]; then
+        return 1
+    fi
+
+    set_secret_env_var "SPARKLE_PRIVATE_KEY" "${key_value}"
+    printf '%s' "${key_value}"
+    return 0
+}
+
+check_sparkle_signing_gate() {
+    if [ "${RUN_DEPLOY}" != true ] || [ "${USE_SPARKLE}" != "true" ]; then
+        return 0
+    fi
+
+    if ! command -v swift >/dev/null 2>&1; then
+        log_error "Swift is required to generate Sparkle signatures during deploy."
+        return 1
+    fi
+
+    if [ ! -f "${SIGN_UPDATE_SCRIPT}" ]; then
+        log_error "Sparkle signing helper not found: ${SIGN_UPDATE_SCRIPT}"
+        return 1
+    fi
+
+    if ! resolve_sparkle_private_key >/dev/null 2>&1; then
+        log_error "Sparkle private key is missing; deploy would skip appcast update and fail later."
+        log_error "Set SPARKLE_PRIVATE_KEY (env or ${SECRETS_ENV_FILE}) or seed keychain with:"
+        log_error "  security add-generic-password -U -a \"EdDSA Private Key\" -s \"https://sparkle-project.org\" -w '<private_key>'"
+        log_error "Optional keychain service also supported: saneprocess.sparkle.private_key"
+        return 1
+    fi
+
+    return 0
+}
+
+check_live_appcast_republish_gate() {
+    if [ "${RUN_DEPLOY}" != true ] || [ "${USE_SPARKLE}" != "true" ]; then
+        return 0
+    fi
+
+    if [ "${ALLOW_REPUBLISH}" = true ]; then
+        log_warn "Republish override enabled (--allow-republish)."
+        return 0
+    fi
+
+    local check_version="${VERSION:-}"
+    local check_build="${BUILD_NUMBER:-}"
+
+    if [ -z "${check_version}" ]; then
+        check_version="$(detect_project_marketing_version || true)"
+    fi
+    if [ -z "${check_build}" ]; then
+        check_build="$(detect_project_build_number || true)"
+    fi
+
+    if [ -z "${check_version}" ] && [ -z "${check_build}" ]; then
+        log_warn "Could not resolve project version/build metadata; skipping early republish guard."
+        return 0
+    fi
+
+    if [ -n "${check_version}" ] && [ -z "${VERSION:-}" ]; then
+        VERSION="${check_version}"
+    fi
+    if [ -n "${check_build}" ] && [ -z "${BUILD_NUMBER:-}" ]; then
+        BUILD_NUMBER="${check_build}"
+    fi
+
+    local appcast_url="https://${SITE_HOST}/appcast.xml"
+    local appcast_content
+    appcast_content=$(curl -fsSL "${appcast_url}" 2>/dev/null || true)
+    if [ -z "${appcast_content}" ]; then
+        # If appcast is unavailable we cannot prove duplicate; continue and let later checks fail if needed.
+        return 0
+    fi
+
+    local live_count
+    live_count=$(appcast_item_count_for_version "${appcast_content}" "${check_version}" "${check_build}")
+    if [ "${live_count}" -ge 1 ]; then
+        local version_label="${check_version:-unknown}"
+        local build_label="${check_build:-unknown}"
+        log_error "Refusing to republish v${version_label} (${build_label}): live appcast already has ${live_count} entr$( [ "${live_count}" = "1" ] && echo "y" || echo "ies" )."
+        log_error "Sparkle users on v${version_label} will not receive an update without a version/build bump."
+        log_error "Bump version (recommended) or rerun with --allow-republish for emergency replacement."
+        return 1
+    fi
+
+    return 0
+}
+
 run_release_preflight_only() {
     local failures=0
 
@@ -1508,6 +1690,8 @@ run_release_preflight_only() {
     run_gate "Notarization authentication" resolve_notary_auth
     run_gate "ASC provisioning authentication" prepare_xcode_provisioning_auth
     run_gate "App Store configuration" check_appstore_gate
+    run_gate "Live appcast republish guard" check_live_appcast_republish_gate
+    run_gate "Sparkle signing prerequisites" check_sparkle_signing_gate
 
     if [ "${failures}" -gt 0 ]; then
         log_error "Preflight-only failed with ${failures} failing gate(s)."
@@ -1911,6 +2095,15 @@ if [ "${FULL_RELEASE}" = true ]; then
     RUN_GH_RELEASE=true
 fi
 
+# Fail fast for deploy-time appcast/version/signature blockers before cleanup/build.
+if ! check_live_appcast_republish_gate; then
+    exit 1
+fi
+
+if ! check_sparkle_signing_gate; then
+    exit 1
+fi
+
 # Clean up previous builds (skip if reusing existing archive)
 if [ "${SKIP_BUILD}" = false ]; then
     log_info "Cleaning previous build artifacts..."
@@ -2229,8 +2422,8 @@ if [ "${USE_SPARKLE}" = true ] && command -v swift >/dev/null 2>&1; then
     log_info ""
     log_info "--- Generating Release Metadata ---"
 
-    log_info "Fetching Sparkle Private Key from Keychain..."
-    SPARKLE_KEY=$(security find-generic-password -w -s "https://sparkle-project.org" -a "EdDSA Private Key" 2>/dev/null || echo "")
+    log_info "Fetching Sparkle Private Key..."
+    SPARKLE_KEY="$(resolve_sparkle_private_key || true)"
 
     if [ -n "${SPARKLE_KEY}" ]; then
         log_info "Sparkle Key found. Generating signature..."
@@ -2268,7 +2461,7 @@ EOF
             log_error "Failed to generate Sparkle signature. Check Swift and key format."
         fi
     else
-        log_warn "Sparkle Private Key not found in Keychain. Skipping signature generation."
+        log_warn "Sparkle private key not found (env, keychain services, or Sparkle keychain entry). Skipping signature generation."
     fi
 
     echo ""
@@ -2296,12 +2489,20 @@ fi
 
 # Guardrail: by default do not republish an already-live Sparkle version/build.
 ensure_not_republishing_live_version() {
+    local check_version="${1:-${VERSION:-}}"
+    local check_build="${2:-${BUILD_NUMBER:-}}"
+
     if [ "${ALLOW_REPUBLISH}" = true ]; then
         log_warn "Republish override enabled (--allow-republish)."
         return 0
     fi
 
     if [ "${USE_SPARKLE}" != "true" ]; then
+        return 0
+    fi
+
+    if [ -z "${check_version}" ] && [ -z "${check_build}" ]; then
+        log_warn "Skipping republish guard: version/build not resolved yet."
         return 0
     fi
 
@@ -2314,13 +2515,17 @@ ensure_not_republishing_live_version() {
     fi
 
     local live_count
-    live_count=$(appcast_item_count_for_version "${appcast_content}")
+    live_count=$(appcast_item_count_for_version "${appcast_content}" "${check_version}" "${check_build}")
     if [ "${live_count}" -ge 1 ]; then
-        log_error "Refusing to republish v${VERSION} (${BUILD_NUMBER}): live appcast already has ${live_count} entr$( [ "${live_count}" = "1" ] && echo "y" || echo "ies" )."
-        log_error "Sparkle users on v${VERSION} will not receive an update without a version/build bump."
+        local version_label="${check_version:-unknown}"
+        local build_label="${check_build:-unknown}"
+        log_error "Refusing to republish v${version_label} (${build_label}): live appcast already has ${live_count} entr$( [ "${live_count}" = "1" ] && echo "y" || echo "ies" )."
+        log_error "Sparkle users on v${version_label} will not receive an update without a version/build bump."
         log_error "Bump version (recommended) or rerun with --allow-republish for emergency replacement."
-        exit 1
+        return 1
     fi
+
+    return 0
 }
 
 # ─── Deploy: R2 upload + appcast update + Pages deploy ───
@@ -2330,7 +2535,9 @@ if [ "${RUN_DEPLOY}" = true ]; then
     log_info "  DEPLOYING TO PRODUCTION"
     log_info "═══════════════════════════════════════════"
 
-    ensure_not_republishing_live_version
+    if ! ensure_not_republishing_live_version "${VERSION:-}" "${BUILD_NUMBER:-}"; then
+        exit 1
+    fi
 
     # Ensure GitHub release + asset exist even when running deploy-only mode.
     ensure_cmd gh
