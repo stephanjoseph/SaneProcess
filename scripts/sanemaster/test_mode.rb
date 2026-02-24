@@ -55,10 +55,8 @@ module SaneMasterModules
         puts ''
       end
 
-      launch_path = app_path
-      if project_name == 'SaneBar'
-        launch_path = stage_to_canonical_local_app_path(app_path)
-      end
+      launch_path = stage_to_canonical_local_app_path(app_path)
+      reconcile_accessibility_trust_local(launch_path)
 
       puts "📱 Launching: #{launch_path}"
       capture_logs = args.include?('--logs')
@@ -215,6 +213,7 @@ module SaneMasterModules
 
         temp_app_path = "#{target_app_path}.staging-#{Process.pid}-#{Time.now.to_i}"
         backup_app_path = "#{target_app_path}.backup-#{Process.pid}-#{Time.now.to_i}"
+        moved_original = false
 
         begin
           FileUtils.rm_rf(temp_app_path) if File.exist?(temp_app_path)
@@ -224,8 +223,20 @@ module SaneMasterModules
             return source_app_path
           end
 
-          FileUtils.mv(target_app_path, backup_app_path) if File.exist?(target_app_path)
-          FileUtils.mv(temp_app_path, target_app_path)
+          if File.exist?(target_app_path)
+            FileUtils.mv(target_app_path, backup_app_path)
+            moved_original = true
+          end
+
+          begin
+            FileUtils.mv(temp_app_path, target_app_path)
+          rescue StandardError
+            if moved_original && File.exist?(backup_app_path)
+              FileUtils.mv(backup_app_path, target_app_path)
+            end
+            raise
+          end
+
           staged_ok = File.exist?(target_app_path)
         ensure
           FileUtils.rm_rf(temp_app_path) if File.exist?(temp_app_path)
@@ -241,6 +252,66 @@ module SaneMasterModules
       system(lsregister, '-kill', '-r', '-domain', 'user') if File.exist?(lsregister)
 
       target_app_path
+    end
+
+    def reconcile_accessibility_trust_local(app_path)
+      bundle_id = bundle_id_for_app(app_path)
+      return unless bundle_id
+
+      user_db = File.expand_path('~/Library/Application Support/com.apple.TCC/TCC.db')
+      return unless File.exist?(user_db)
+
+      escaped_bundle = bundle_id.gsub("'", "''")
+      rows_raw = `sqlite3 "#{user_db}" "SELECT rowid || '|' || IFNULL(hex(csreq), '') FROM access WHERE service='kTCCServiceAccessibility' AND client='#{escaped_bundle}';"`.strip
+      return if rows_raw.empty?
+
+      stale_row_ids = []
+
+      rows_raw.each_line do |line|
+        row = line.strip
+        next if row.empty?
+
+        row_id, csreq_hex = row.split('|', 2)
+        next unless row_id && row_id.match?(/\A\d+\z/)
+
+        if csreq_hex.nil? || csreq_hex.empty?
+          stale_row_ids << row_id
+          next
+        end
+
+        csreq_path = File.join(Dir.tmpdir, "sanemaster-ax-#{project_name}-#{row_id}.csreq")
+        begin
+          File.binwrite(csreq_path, [csreq_hex].pack('H*'))
+          requirement = `csreq -r "#{csreq_path}" -t 2>/dev/null`.strip
+
+          if requirement.empty?
+            stale_row_ids << row_id
+            next
+          end
+
+          matches = system('codesign', "-R=#{requirement}", app_path, out: File::NULL, err: File::NULL)
+          stale_row_ids << row_id unless matches
+        ensure
+          FileUtils.rm_f(csreq_path)
+        end
+      end
+
+      return if stale_row_ids.empty?
+
+      puts "🧹 Repairing stale Accessibility rows for #{bundle_id}"
+      system('killall', 'tccd', out: File::NULL, err: File::NULL)
+      system('sqlite3', user_db, "DELETE FROM access WHERE rowid IN (#{stale_row_ids.join(',')});", out: File::NULL, err: File::NULL)
+      system('killall', 'tccd', out: File::NULL, err: File::NULL)
+    end
+
+    def bundle_id_for_app(app_path)
+      info_plist = File.join(app_path, 'Contents', 'Info.plist')
+      return nil unless File.exist?(info_plist)
+
+      bundle_id = `"/usr/libexec/PlistBuddy" -c "Print :CFBundleIdentifier" "#{info_plist}" 2>/dev/null`.strip
+      return nil if bundle_id.empty?
+
+      bundle_id
     end
 
     def show_screenshots(screenshots_dir)
