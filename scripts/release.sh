@@ -2177,7 +2177,8 @@ if [ "${RUN_DEPLOY}" = true ]; then
     # Step 1: Upload ZIP to R2
     log_info "Uploading ZIP to R2 bucket ${R2_BUCKET}..."
     ensure_cmd npx
-    npx wrangler r2 object put "${R2_BUCKET}/${APP_NAME}-${VERSION}.zip" \
+    R2_OBJECT_KEY="updates/${APP_NAME}-${VERSION}.zip"
+    npx wrangler r2 object put "${R2_BUCKET}/${R2_OBJECT_KEY}" \
         --file="${FINAL_ZIP}" --remote
     log_info "R2 upload complete."
 
@@ -2210,12 +2211,13 @@ if [ "${RUN_DEPLOY}" = true ]; then
             | python3 -c '
 import sys, json
 app_name, version = sys.argv[1], sys.argv[2]
-keep = f"{app_name}-{version}.zip"
-prefix = f"{app_name}-"
+keep = f"updates/{app_name}-{version}.zip"
+legacy_keep = f"{app_name}-{version}.zip"
+prefixes = (f"updates/{app_name}-", f"{app_name}-")
 data = json.load(sys.stdin)
 for obj in data.get("result", []):
     key = obj.get("key", "")
-    if key.startswith(prefix) and key != keep:
+    if any(key.startswith(p) for p in prefixes) and key not in (keep, legacy_keep):
         print(key)
 ' "${APP_NAME}" "${VERSION}" 2>/dev/null)
 
