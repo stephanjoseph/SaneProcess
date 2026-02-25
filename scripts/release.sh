@@ -2184,10 +2184,10 @@ if [ "${RUN_DEPLOY}" = true ]; then
 
     # Verify R2 upload
     log_info "Verifying download URL..."
-    HTTP_STATUS=$(curl -sI "https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip" | head -1 | awk '{print $2}')
+    HTTP_STATUS=$(curl -A "Sparkle/2" -sI "https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip" | head -1 | awk '{print $2}')
     if [ "${HTTP_STATUS}" != "200" ]; then
         log_error "R2 verification FAILED! https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip returned ${HTTP_STATUS}"
-        log_error "Check R2 bucket key format — Worker may strip /updates/ prefix."
+        log_error "Check dist Worker routing and anti-bot rules for non-browser user agents."
         exit 1
     fi
     log_info "Download verified: https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip (200 OK)"
