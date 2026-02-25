@@ -246,9 +246,21 @@ extract_http_status() {
     curl -sI -o /dev/null -w '%{http_code}' "${url}" 2>/dev/null || echo "000"
 }
 
+extract_http_status_with_user_agent() {
+    local url="$1"
+    local user_agent="$2"
+    curl -A "${user_agent}" -sI -o /dev/null -w '%{http_code}' "${url}" 2>/dev/null || echo "000"
+}
+
 extract_content_length() {
     local url="$1"
     curl -sI "${url}" 2>/dev/null | awk 'tolower($1)=="content-length:" {gsub("\r","",$2); print $2}' | tail -1
+}
+
+extract_content_length_with_user_agent() {
+    local url="$1"
+    local user_agent="$2"
+    curl -A "${user_agent}" -sI "${url}" 2>/dev/null | awk 'tolower($1)=="content-length:" {gsub("\r","",$2); print $2}' | tail -1
 }
 
 appcast_item_count_for_version() {
@@ -481,6 +493,95 @@ appstore_duplicate_build_upload_detected() {
     return 1
 }
 
+appcast_signature_for_version() {
+    local appcast_content="$1"
+    APPCAST_CONTENT="${appcast_content}" python3 - "${VERSION}" "${BUILD_NUMBER}" <<'PY'
+import os
+import re
+import sys
+
+xml = os.environ.get("APPCAST_CONTENT", "")
+version = sys.argv[1]
+build = sys.argv[2]
+
+def matches_item(item: str) -> bool:
+    if f'sparkle:shortVersionString="{version}"' in item:
+        return True
+    if f'sparkle:version="{build}"' in item:
+        return True
+    if re.search(rf"<sparkle:shortVersionString>\s*{re.escape(version)}\s*</sparkle:shortVersionString>", item):
+        return True
+    if re.search(rf"<sparkle:version>\s*{re.escape(build)}\s*</sparkle:version>", item):
+        return True
+    return False
+
+for match in re.finditer(r"<item>.*?</item>", xml, flags=re.S):
+    item = match.group(0)
+    if not matches_item(item):
+        continue
+
+    enclosure = re.search(r"<enclosure\b[^>]*>", item, flags=re.S)
+    if not enclosure:
+        continue
+
+    sig_match = re.search(r'sparkle:edSignature="([^"]+)"', enclosure.group(0))
+    if sig_match:
+        print(sig_match.group(1))
+        sys.exit(0)
+
+print("")
+PY
+}
+
+verify_sparkle_signature_for_dist_url() {
+    local dist_url="$1"
+    local ed_signature="$2"
+
+    if [ -z "${ed_signature}" ]; then
+        log_error "Appcast entry for v${VERSION} missing sparkle:edSignature"
+        return 1
+    fi
+
+    if ! command -v swift >/dev/null 2>&1; then
+        log_error "swift is required for Sparkle signature verification."
+        return 1
+    fi
+
+    if ! DIST_URL="${dist_url}" ED_SIGNATURE="${ed_signature}" SPARKLE_PUBLIC_KEY="${SHARED_SPARKLE_PUBLIC_KEY}" swift -e '
+import Foundation
+import CryptoKit
+
+let env = ProcessInfo.processInfo.environment
+guard
+    let distURL = env["DIST_URL"],
+    let signatureB64 = env["ED_SIGNATURE"],
+    let publicKeyB64 = env["SPARKLE_PUBLIC_KEY"],
+    let url = URL(string: distURL),
+    let signature = Data(base64Encoded: signatureB64),
+    let publicKeyData = Data(base64Encoded: publicKeyB64)
+else {
+    exit(1)
+}
+
+do {
+    let archive = try Data(contentsOf: url)
+    let key = try Curve25519.Signing.PublicKey(rawRepresentation: publicKeyData)
+    if key.isValidSignature(signature, for: archive) {
+        exit(0)
+    } else {
+        exit(2)
+    }
+} catch {
+    exit(3)
+}
+' >/dev/null 2>&1; then
+        log_error "Sparkle signature mismatch: appcast signature for v${VERSION} does not validate against live archive bytes."
+        return 1
+    fi
+
+    return 0
+}
+
 run_post_release_checks() {
     local dist_url="https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip"
     local appcast_url="https://${SITE_HOST}/appcast.xml"
@@ -490,15 +591,22 @@ run_post_release_checks() {
 
     log_info "Running strict post-release checks..."
 
-    local dist_status
-    dist_status=$(extract_http_status "${dist_url}")
-    if [ "${dist_status}" != "200" ]; then
-        log_error "Download URL failed: ${dist_url} returned HTTP ${dist_status}"
+    local dist_status_browser
+    dist_status_browser=$(extract_http_status "${dist_url}")
+    if [ "${dist_status_browser}" != "200" ] && [ "${dist_status_browser}" != "206" ]; then
+        log_error "Download URL failed for browser/web install flow: ${dist_url} returned HTTP ${dist_status_browser}"
+        return 1
+    fi
+
+    local dist_status_sparkle
+    dist_status_sparkle=$(extract_http_status_with_user_agent "${dist_url}" "Sparkle/2")
+    if [ "${dist_status_sparkle}" != "200" ] && [ "${dist_status_sparkle}" != "206" ]; then
+        log_error "Download URL failed for Sparkle flow: ${dist_url} returned HTTP ${dist_status_sparkle}"
         return 1
     fi
 
     local dist_length
-    dist_length=$(extract_content_length "${dist_url}")
+    dist_length=$(extract_content_length_with_user_agent "${dist_url}" "Sparkle/2")
     if [ -z "${dist_length}" ]; then
         log_error "Download URL missing Content-Length: ${dist_url}"
         return 1
@@ -553,6 +661,12 @@ PY
 
         if [ "${appcast_length}" != "${dist_length}" ]; then
             log_error "Length mismatch: appcast=${appcast_length}, dist=${dist_length}"
+            return 1
+        fi
+
+        local appcast_signature
+        appcast_signature=$(appcast_signature_for_version "${appcast_content}")
+        if ! verify_sparkle_signature_for_dist_url "${dist_url}" "${appcast_signature}"; then
             return 1
         fi
     fi
@@ -2679,13 +2793,15 @@ if [ "${RUN_DEPLOY}" = true ]; then
 
     # Verify R2 upload
     log_info "Verifying download URL..."
-    HTTP_STATUS=$(curl -sI "https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip" | head -1 | awk '{print $2}')
-    if [ "${HTTP_STATUS}" != "200" ]; then
-        log_error "R2 verification FAILED! https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip returned ${HTTP_STATUS}"
-        log_error "Check R2 bucket key format — Worker may strip /updates/ prefix."
+    HTTP_STATUS_BROWSER=$(extract_http_status "https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip")
+    HTTP_STATUS_SPARKLE=$(extract_http_status_with_user_agent "https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip" "Sparkle/2")
+    if { [ "${HTTP_STATUS_BROWSER}" != "200" ] && [ "${HTTP_STATUS_BROWSER}" != "206" ]; } || \
+       { [ "${HTTP_STATUS_SPARKLE}" != "200" ] && [ "${HTTP_STATUS_SPARKLE}" != "206" ]; }; then
+        log_error "R2 verification FAILED! https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip returned browser=${HTTP_STATUS_BROWSER}, sparkle=${HTTP_STATUS_SPARKLE}"
+        log_error "Check dist Worker routing and update/download channel rules."
         exit 1
     fi
-    log_info "Download verified: https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip (200 OK)"
+    log_info "Download verified: https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip (browser=${HTTP_STATUS_BROWSER}, sparkle=${HTTP_STATUS_SPARKLE})"
 
     # Step 1b: Clean up old versions from R2
     # Only the current version should exist — old files attract bot traffic and waste storage.
