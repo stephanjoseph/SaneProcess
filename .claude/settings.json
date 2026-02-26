@@ -44,7 +44,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -n \"$CLAUDE_CODE\" ] && [ -f .saneprocess ] && ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/session_start.rb || true",
+            "command": "[ -n \"${CLAUDECODE}${CLAUDE_CODE}\" ] && [ -f .saneprocess ] && ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/session_start.rb || true",
             "timeout": 15
           }
         ]
@@ -55,7 +55,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -n \"$CLAUDE_CODE\" ] && [ -f .saneprocess ] && ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/saneprompt.rb || true",
+            "command": "[ -n \"${CLAUDECODE}${CLAUDE_CODE}\" ] && [ -f .saneprocess ] && ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/saneprompt.rb || true",
             "timeout": 5
           }
         ]
@@ -66,7 +66,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -n \"$CLAUDE_CODE\" ] && [ -f .saneprocess ] && ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sanetools.rb || true",
+            "command": "[ -n \"${CLAUDECODE}${CLAUDE_CODE}\" ] && [ -f .saneprocess ] && ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sanetools.rb || true",
             "timeout": 5
           }
         ]
@@ -117,7 +117,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -n \"$CLAUDE_CODE\" ] && [ -f .saneprocess ] && ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sanetrack.rb || true",
+            "command": "[ -n \"${CLAUDECODE}${CLAUDE_CODE}\" ] && [ -f .saneprocess ] && ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sanetrack.rb || true",
             "timeout": 5
           }
         ]
@@ -160,7 +160,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -n \"$CLAUDE_CODE\" ] && [ -f .saneprocess ] && ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sanestop.rb || true",
+            "command": "[ -n \"${CLAUDECODE}${CLAUDE_CODE}\" ] && [ -f .saneprocess ] && ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sanestop.rb || true",
             "timeout": 5
           }
         ]

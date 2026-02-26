@@ -338,7 +338,15 @@ class SaneMaster
       return
     end
 
-    remote_cmd = "./scripts/SaneMaster.rb #{([command] + args).map { |arg| Shellwords.escape(arg) }.join(' ')}"
+    forwarded_env_keys = %w[SANEMASTER_APPSTORE_PREFLIGHT]
+    forwarded_env = forwarded_env_keys.filter_map do |key|
+      value = ENV[key]
+      next if value.nil? || value.empty?
+
+      "#{key}=#{Shellwords.escape(value)}"
+    end
+    remote_env_prefix = forwarded_env.empty? ? '' : "#{forwarded_env.join(' ')} "
+    remote_cmd = "#{remote_env_prefix}./scripts/SaneMaster.rb #{([command] + args).map { |arg| Shellwords.escape(arg) }.join(' ')}"
     puts "📍 Mini-first routing: #{command} -> mini (#{remote_repo})"
     exec('ssh', 'mini', "cd #{Shellwords.escape(remote_repo)} && #{remote_cmd}")
   end

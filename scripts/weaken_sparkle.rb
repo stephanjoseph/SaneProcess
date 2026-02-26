@@ -30,9 +30,9 @@ end
 
 data = File.binread(binary_path)
 
-# Find the Sparkle dylib name string in the binary
-str_offset = data.index(SPARKLE_DYLIB_NAME)
-unless str_offset
+# Find every Sparkle dylib name string in the binary (fat binaries can have one per slice)
+first_offset = data.index(SPARKLE_DYLIB_NAME)
+unless first_offset
   warn "No Sparkle dylib reference found in binary — nothing to patch."
   exit 0
 end
@@ -49,29 +49,50 @@ end
 # The name field is an offset from the start of the load command to the string.
 # Walk backwards from the string to find the matching LC_LOAD_DYLIB command.
 
-patched = false
-(24..256).each do |offset|
-  cmd_start = str_offset - offset
-  next if cmd_start < 0
+patched_count = 0
+already_weak_count = 0
+search_from = 0
 
-  cmd = data[cmd_start, 4].unpack1("V")
-  next unless cmd == LC_LOAD_DYLIB
+while (str_offset = data.index(SPARKLE_DYLIB_NAME, search_from))
+  search_from = str_offset + SPARKLE_DYLIB_NAME.bytesize
+  patched_for_this_reference = false
 
-  # Verify: the name offset field should point back to our string
-  name_offset = data[cmd_start + 8, 4].unpack1("V")
-  next unless name_offset == offset
+  (24..1024).each do |offset|
+    cmd_start = str_offset - offset
+    next if cmd_start < 0
 
-  # Patch LC_LOAD_DYLIB → LC_LOAD_WEAK_DYLIB
-  data[cmd_start, 4] = [LC_LOAD_WEAK_DYLIB].pack("V")
-  patched = true
-  break
+    cmd = data[cmd_start, 4].unpack1("V")
+    # Verify: the name offset field should point back to our string
+    name_offset = data[cmd_start + 8, 4].unpack1("V")
+    next unless name_offset == offset
+
+    if cmd == LC_LOAD_DYLIB
+      # Patch LC_LOAD_DYLIB → LC_LOAD_WEAK_DYLIB
+      data[cmd_start, 4] = [LC_LOAD_WEAK_DYLIB].pack("V")
+      patched_count += 1
+      patched_for_this_reference = true
+      break
+    end
+
+    if cmd == LC_LOAD_WEAK_DYLIB
+      already_weak_count += 1
+      patched_for_this_reference = true
+      break
+    end
+  end
+
+  next if patched_for_this_reference
 end
 
-unless patched
+if patched_count.zero?
+  if already_weak_count.positive?
+    warn "Sparkle dylib reference already weak-linked — nothing to patch."
+    exit 0
+  end
   warn "Found Sparkle string but could not locate matching LC_LOAD_DYLIB command."
   exit 1
 end
 
 File.binwrite(binary_path, data)
-warn "Patched: Sparkle dylib reference changed from LC_LOAD_DYLIB to LC_LOAD_WEAK_DYLIB"
+warn "Patched #{patched_count} Sparkle load command(s) to LC_LOAD_WEAK_DYLIB"
 exit 0

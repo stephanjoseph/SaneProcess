@@ -24,10 +24,13 @@ require 'net/http'
 require 'openssl'
 require 'optparse'
 require 'securerandom'
+require 'shellwords'
+require 'digest'
 require 'time'
 require 'uri'
 require 'yaml'
 require 'tmpdir'
+require 'open3'
 
 begin
   require 'jwt'
@@ -37,11 +40,78 @@ rescue LoadError
   exit 1
 end
 
+# ─── Headless Secret Fallback ───
+
+def parse_env_file(path)
+  return unless File.file?(path)
+
+  File.foreach(path) do |line|
+    next if line.strip.empty? || line.lstrip.start_with?('#')
+
+    text = line.sub(/\A\s*export\s+/, '').strip
+    next unless text.include?('=')
+
+    key, raw_value = text.split('=', 2)
+    key = key.to_s.strip
+    next if key.empty? || ENV.key?(key)
+
+    value = raw_value.to_s.strip
+    if value.start_with?('"') && value.end_with?('"') && value.length >= 2
+      value = value[1..-2]
+    elsif value.start_with?("'") && value.end_with?("'") && value.length >= 2
+      value = value[1..-2]
+    end
+    ENV[key] = value
+  end
+end
+
+def keychain_secret(service, account = nil)
+  cmd = ['security', 'find-generic-password', '-w', '-s', service]
+  cmd += ['-a', account] if account && !account.empty?
+  out, status = Open3.capture2e(*cmd)
+  return out.strip if status.success?
+  ''
+rescue StandardError
+  ''
+end
+
+def set_env_if_missing(key, value)
+  return if key.to_s.empty? || value.to_s.empty?
+  return if ENV.key?(key) && !ENV[key].to_s.empty?
+
+  ENV[key] = value
+end
+
+def hydrate_headless_env
+  files = [
+    ENV['SANEPROCESS_SECRETS_FILE'],
+    File.expand_path('~/.config/saneprocess/secrets.env'),
+    File.expand_path('~/.saneprocess/secrets.env')
+  ].compact
+
+  files.each do |path|
+    next unless File.file?(path)
+    parse_env_file(path)
+    break
+  end
+
+  set_env_if_missing('ASC_AUTH_KEY_ID', keychain_secret('saneprocess.asc.key_id', 'asc_key_id'))
+  set_env_if_missing('ASC_AUTH_KEY_ID', keychain_secret('saneprocess.asc.key_id'))
+  set_env_if_missing('ASC_AUTH_ISSUER_ID', keychain_secret('saneprocess.asc.issuer_id', 'asc_issuer_id'))
+  set_env_if_missing('ASC_AUTH_ISSUER_ID', keychain_secret('saneprocess.asc.issuer_id'))
+  set_env_if_missing('ASC_AUTH_KEY_PATH', keychain_secret('saneprocess.asc.key_path', 'asc_key_path'))
+  set_env_if_missing('ASC_AUTH_KEY_PATH', keychain_secret('saneprocess.asc.key_path'))
+end
+
+hydrate_headless_env
+
 # ─── Configuration ───
 
-ISSUER_ID = 'c98b1e0a-8d10-4fce-a417-536b31c09bfb'
-KEY_ID = 'S34998ZCRT'
-P8_PATH = File.expand_path('~/.private_keys/AuthKey_S34998ZCRT.p8')
+ISSUER_ID = ENV['ASC_AUTH_ISSUER_ID'] || ENV['ASC_ISSUER_ID'] || 'c98b1e0a-8d10-4fce-a417-536b31c09bfb'
+KEY_ID = ENV['ASC_AUTH_KEY_ID'] || ENV['ASC_KEY_ID'] || 'S34998ZCRT'
+P8_PATH = File.expand_path(
+  ENV['ASC_AUTH_KEY_PATH'] || ENV['ASC_KEY_PATH'] || '~/.private_keys/AuthKey_S34998ZCRT.p8'
+)
 ASC_BASE = 'https://api.appstoreconnect.apple.com/v1'
 
 PLATFORM_MAP = {
@@ -67,6 +137,17 @@ SCREENSHOT_VARIANTS = {
 
 BUILD_POLL_INTERVAL = 30   # seconds
 BUILD_POLL_TIMEOUT = 2700  # 45 minutes
+SUBMISSION_POLL_INTERVAL = 8
+SUBMISSION_POLL_TIMEOUT = 180
+
+SUBMITTED_APP_STORE_STATES = %w[
+  WAITING_FOR_REVIEW
+  IN_REVIEW
+  PENDING_APPLE_RELEASE
+  PENDING_DEVELOPER_RELEASE
+  PROCESSING_FOR_DISTRIBUTION
+  READY_FOR_SALE
+].freeze
 
 # ─── Logging ───
 
@@ -110,7 +191,7 @@ end
 
 # ─── HTTP Helpers ───
 
-def asc_request(method, path, body: nil, token: nil)
+def asc_request(method, path, body: nil, token: nil, retry_on_unauthorized: true)
   token ||= generate_jwt
   uri = URI("#{ASC_BASE}#{path}")
 
@@ -134,6 +215,17 @@ def asc_request(method, path, body: nil, token: nil)
   end
 
   response = http.request(request)
+
+  if response.code == '401' && retry_on_unauthorized
+    log_warn "ASC API #{method.upcase} #{path} returned 401; refreshing token and retrying once..."
+    return asc_request(
+      method,
+      path,
+      body: body,
+      token: generate_jwt,
+      retry_on_unauthorized: false
+    )
+  end
 
   unless response.is_a?(Net::HTTPSuccess) || response.is_a?(Net::HTTPCreated) || response.code == '409'
     log_error "ASC API #{method.upcase} #{path} → #{response.code}"
@@ -165,23 +257,115 @@ def asc_delete(path, token: nil)
   asc_request(:delete, path, token: token)
 end
 
+def asc_post_with_status(path, body:, token: nil)
+  token ||= generate_jwt
+  uri = URI("#{ASC_BASE}#{path}")
+
+  http = Net::HTTP.new(uri.host, uri.port)
+  http.use_ssl = true
+  http.open_timeout = 15
+  http.read_timeout = 60
+
+  request = Net::HTTP::Post.new(uri)
+  request['Authorization'] = "Bearer #{token}"
+  request['Content-Type'] = 'application/json'
+  request.body = body.is_a?(String) ? body : JSON.generate(body)
+
+  response = http.request(request)
+  parsed = begin
+    JSON.parse(response.body.to_s)
+  rescue StandardError
+    { 'raw' => response.body.to_s }
+  end
+  [response.code.to_i, parsed]
+rescue StandardError => e
+  log_error "ASC API raw POST error: #{e.message}"
+  [0, { 'error' => e.message }]
+end
+
+# ─── Package Metadata ───
+
+def extract_app_info_from_package(pkg_path)
+  read_plist = lambda do |info_path|
+    return nil unless info_path && File.exist?(info_path)
+
+    bundle_id = `"/usr/libexec/PlistBuddy" -c 'Print :CFBundleIdentifier' #{Shellwords.escape(info_path)} 2>/dev/null`.strip
+    short_version = `"/usr/libexec/PlistBuddy" -c 'Print :CFBundleShortVersionString' #{Shellwords.escape(info_path)} 2>/dev/null`.strip
+    build_number = `"/usr/libexec/PlistBuddy" -c 'Print :CFBundleVersion' #{Shellwords.escape(info_path)} 2>/dev/null`.strip
+
+    return nil if bundle_id.empty? || short_version.empty? || build_number.empty?
+
+    {
+      bundle_id: bundle_id,
+      short_version: short_version,
+      build_number: build_number
+    }
+  end
+
+  if pkg_path.end_with?('.ipa')
+    Dir.mktmpdir('asc_info_plist') do |tmpdir|
+      unzip_ok = system("unzip -qq -o #{Shellwords.escape(pkg_path)} 'Payload/*.app/Info.plist' -d #{Shellwords.escape(tmpdir)} >/dev/null 2>&1")
+      return nil unless unzip_ok
+
+      info_path = Dir.glob(File.join(tmpdir, 'Payload', '*.app', 'Info.plist')).first
+      return read_plist.call(info_path)
+    end
+  elsif pkg_path.end_with?('.pkg')
+    Dir.mktmpdir('asc_pkg_info') do |tmpdir|
+      expanded = File.join(tmpdir, 'expanded')
+      expand_ok = system('pkgutil', '--expand-full', pkg_path, expanded, out: File::NULL, err: File::NULL)
+      return nil unless expand_ok
+
+      candidates = Dir.glob(File.join(expanded, '**', 'Payload', '*.app', 'Contents', 'Info.plist'))
+      info_path = candidates.find { |p| !p.include?('/Frameworks/') && !p.include?('/PlugIns/') } || candidates.first
+      return read_plist.call(info_path)
+    end
+  end
+
+  nil
+end
+
 # ─── Upload Build ───
 
-def upload_build(pkg_path)
+def upload_build(pkg_path, app_id:, version:)
   log_info "Uploading #{File.basename(pkg_path)} via altool..."
 
-  cmd = [
-    'xcrun', 'altool', '--upload-app',
-    '-f', pkg_path,
-    '--apiKey', KEY_ID,
-    '--apiIssuer', ISSUER_ID,
-    '-t', pkg_path.end_with?('.ipa') ? 'ios' : 'macos'
-  ]
+  package_info = extract_app_info_from_package(pkg_path)
+  cmd =
+    if package_info
+      [
+        'xcrun', 'altool', '--upload-package', pkg_path,
+        '-t', pkg_path.end_with?('.ipa') ? 'ios' : 'macos',
+        '--apple-id', app_id,
+        '--bundle-id', package_info[:bundle_id],
+        '--bundle-version', package_info[:build_number],
+        '--bundle-short-version-string', package_info[:short_version],
+        '--wait',
+        '--apiKey', KEY_ID,
+        '--apiIssuer', ISSUER_ID
+      ]
+    else
+      [
+        'xcrun', 'altool', '--upload-app',
+        '-f', pkg_path,
+        '--apiKey', KEY_ID,
+        '--apiIssuer', ISSUER_ID,
+        '-t', pkg_path.end_with?('.ipa') ? 'ios' : 'macos'
+      ]
+    end
 
   output = `#{cmd.map { |c| Shellwords.escape(c) }.join(' ')} 2>&1`
   success = $?.success?
+  output_failure_patterns = [
+    /upload failed/i,
+    /validation failed/i,
+    /state_error\.validation_error/i,
+    /missing info\.plist/i,
+    /app sandbox not enabled/i
+  ]
+  reported_failure = output_failure_patterns.any? { |pattern| output.match?(pattern) }
 
-  if success
+  if success && !reported_failure
     log_info 'Upload complete.'
   else
     if output.include?('already been uploaded') || output.include?('already exists')
@@ -249,7 +433,7 @@ def find_editable_version(app_id, asc_platform, version_string, token)
   # READY_FOR_REVIEW still accepts metadata/screenshot updates in ASC for some flows.
   path = "/apps/#{app_id}/appStoreVersions" \
          "?filter[platform]=#{asc_platform}" \
-         "&filter[appStoreState]=PREPARE_FOR_SUBMISSION,REJECTED,READY_FOR_REVIEW"
+         "&filter[appStoreState]=PREPARE_FOR_SUBMISSION,REJECTED,DEVELOPER_REJECTED,READY_FOR_REVIEW"
   resp = asc_get(path, token: token)
 
   return nil unless resp && resp['data']
@@ -585,6 +769,37 @@ end
 def submit_for_review(app_id, asc_platform, version_id, token)
   log_info 'Submitting for App Review...'
 
+  # Preferred endpoint for final submission state transition.
+  # Some API keys do not allow CREATE on appStoreVersionSubmissions; we detect
+  # that and fall back to reviewSubmissions flow.
+  version_submission_body = {
+    data: {
+      type: 'appStoreVersionSubmissions',
+      relationships: {
+        appStoreVersion: {
+          data: { type: 'appStoreVersions', id: version_id }
+        }
+      }
+    }
+  }
+  version_submission_code, version_submission_resp = asc_post_with_status(
+    '/appStoreVersionSubmissions',
+    body: version_submission_body,
+    token: token
+  )
+  if [200, 201, 202, 409].include?(version_submission_code)
+    log_info 'Created appStoreVersionSubmission.'
+    return verify_submitted_state(version_id, token)
+  end
+  if version_submission_code == 403
+    detail = version_submission_resp.dig('errors', 0, 'detail') || 'Forbidden'
+    log_warn "appStoreVersionSubmissions create not allowed for this key: #{detail}"
+    log_warn 'Falling back to reviewSubmissions flow.'
+  end
+  if version_submission_code != 403
+    log_warn "Could not create appStoreVersionSubmission (HTTP #{version_submission_code}). Falling back to reviewSubmissions path."
+  end
+
   submission_body = {
     data: {
       type: 'reviewSubmissions',
@@ -638,11 +853,34 @@ def submit_for_review(app_id, asc_platform, version_id, token)
 
   item_resp = asc_post('/reviewSubmissionItems', body: item_body, token: token)
   if item_resp
-    log_info 'Successfully submitted for review!'
-    return true
+    log_info 'Review submission item created.'
+    return verify_submitted_state(version_id, token)
   end
 
   log_warn 'Could not create reviewSubmissionItem automatically. App may require manual resubmission in ASC UI.'
+  false
+end
+
+def current_app_store_state(version_id, token)
+  resp = asc_get("/appStoreVersions/#{version_id}", token: token)
+  resp&.dig('data', 'attributes', 'appStoreState')
+end
+
+def verify_submitted_state(version_id, token)
+  deadline = Time.now + SUBMISSION_POLL_TIMEOUT
+  last_state = nil
+
+  while Time.now < deadline
+    last_state = current_app_store_state(version_id, token)
+    if SUBMITTED_APP_STORE_STATES.include?(last_state)
+      log_info "Successfully submitted for review (state: #{last_state})."
+      return true
+    end
+    sleep SUBMISSION_POLL_INTERVAL
+  end
+
+  log_error "Submission did not transition to review state (current: #{last_state || 'unknown'})."
+  log_error 'App Store draft may exist, but final submission is still pending. Submit manually in App Store Connect UI.'
   false
 end
 
@@ -651,18 +889,55 @@ def default_build_number(version)
   normalized.empty? ? '1' : normalized
 end
 
+def detect_project_build_number(project_root)
+  return nil if project_root.nil? || project_root.empty?
+
+  project_yml = File.join(project_root, 'project.yml')
+  if File.exist?(project_yml)
+    content = File.read(project_yml)
+    match = content.match(/CURRENT_PROJECT_VERSION:\s*"?([0-9]+)"?/)
+    return match[1] if match
+  end
+
+  pbxproj = Dir.glob(File.join(project_root, '*.xcodeproj', 'project.pbxproj')).first
+  if pbxproj && File.exist?(pbxproj)
+    content = File.read(pbxproj)
+    match = content.match(/CURRENT_PROJECT_VERSION = ([0-9]+);/)
+    return match[1] if match
+  end
+
+  nil
+end
+
 def extract_build_number_from_package(pkg_path)
-  return nil unless pkg_path.end_with?('.ipa')
+  if pkg_path.end_with?('.ipa')
+    Dir.mktmpdir('asc_info_plist') do |tmpdir|
+      unzip_ok = system("unzip -qq -o #{Shellwords.escape(pkg_path)} 'Payload/*.app/Info.plist' -d #{Shellwords.escape(tmpdir)} >/dev/null 2>&1")
+      return nil unless unzip_ok
 
-  Dir.mktmpdir('asc_info_plist') do |tmpdir|
-    unzip_ok = system("unzip -qq -o #{Shellwords.escape(pkg_path)} 'Payload/*.app/Info.plist' -d #{Shellwords.escape(tmpdir)} >/dev/null 2>&1")
-    return nil unless unzip_ok
+      info_path = Dir.glob(File.join(tmpdir, 'Payload', '*.app', 'Info.plist')).first
+      return nil unless info_path && File.exist?(info_path)
 
-    info_path = Dir.glob(File.join(tmpdir, 'Payload', '*.app', 'Info.plist')).first
-    return nil unless info_path && File.exist?(info_path)
+      bundle_version = `"/usr/libexec/PlistBuddy" -c 'Print :CFBundleVersion' #{Shellwords.escape(info_path)} 2>/dev/null`.strip
+      return bundle_version unless bundle_version.empty?
+      nil
+    end
+  elsif pkg_path.end_with?('.pkg')
+    Dir.mktmpdir('asc_pkg_info') do |tmpdir|
+      expanded = File.join(tmpdir, 'expanded')
+      expand_ok = system('pkgutil', '--expand-full', pkg_path, expanded, out: File::NULL, err: File::NULL)
+      return nil unless expand_ok
 
-    bundle_version = `"/usr/libexec/PlistBuddy" -c 'Print :CFBundleVersion' #{Shellwords.escape(info_path)} 2>/dev/null`.strip
-    bundle_version.empty? ? nil : bundle_version
+      candidates = Dir.glob(File.join(expanded, '**', 'Payload', '*.app', 'Contents', 'Info.plist'))
+      info_path = candidates.find { |p| !p.include?('/Frameworks/') && !p.include?('/PlugIns/') } || candidates.first
+      return nil unless info_path && File.exist?(info_path)
+
+      bundle_version = `"/usr/libexec/PlistBuddy" -c 'Print :CFBundleVersion' #{Shellwords.escape(info_path)} 2>/dev/null`.strip
+      return bundle_version unless bundle_version.empty?
+      nil
+    end
+  else
+    nil
   end
 end
 
@@ -681,9 +956,6 @@ OptionParser.new do |opts|
   opts.on('--skip-upload', 'Skip binary upload; use existing processed build in ASC') { options[:skip_upload] = true }
   opts.on('--test-screenshots', 'Test screenshot resize only (no API calls)') { options[:test_screenshots] = true }
 end.parse!
-
-require 'shellwords'
-require 'digest'
 
 # Test screenshots mode
 if options[:test_screenshots]
@@ -763,7 +1035,7 @@ token = generate_jwt
 
 # Step 1: Upload build
 unless options[:skip_upload]
-  unless upload_build(pkg_path)
+  unless upload_build(pkg_path, app_id: app_id, version: version)
     log_error 'Build upload failed. Aborting.'
     exit 1
   end
@@ -776,7 +1048,13 @@ build_number =
   if options[:build_number]
     options[:build_number]
   elsif options[:skip_upload]
-    default_build_number(version)
+    detected_build_number = detect_project_build_number(project_root)
+    if detected_build_number
+      log_info "Using build number #{detected_build_number} from project metadata."
+      detected_build_number
+    else
+      default_build_number(version)
+    end
   else
     extract_build_number_from_package(pkg_path) || default_build_number(version)
   end
