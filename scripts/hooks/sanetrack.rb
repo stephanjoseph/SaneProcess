@@ -618,6 +618,82 @@ rescue StandardError => e
   warn "⚠️  Deployment tracking error: #{e.message}" if ENV['DEBUG']
 end
 
+# === HANDOFF TRACKING ===
+# Tracks whether significant code changes were made and whether
+# SESSION_HANDOFF.md and memory files were updated accordingly.
+# sanestop.rb blocks session end if significant edits happened without handoff update.
+
+# Files that don't count as "significant" edits (updating these IS the handoff)
+HANDOFF_FILE_PATTERNS = [
+  /SESSION_HANDOFF\.md$/i,
+  /MEMORY\.md$/i,
+  %r{memory/.*\.md$}i,
+  %r{\.serena/memories/}i,
+  /sop_ratings\.csv$/i,
+  /state\.json$/i,
+  /sanetrack\.log$/i,
+  /sanestop\.log$/i,
+  /session_learnings/i
+].freeze
+
+# Files that are trivial and don't require handoff updates
+TRIVIAL_FILE_PATTERNS = [
+  /\.log$/i,
+  /\.csv$/i,
+  /\.lock$/i,
+  /\.json\.lock$/i
+].freeze
+
+def track_handoff_status(tool_name, tool_input)
+  # Serena memory writes count as memory updates even without a file path.
+  if tool_name == 'mcp__serena__write_memory'
+    StateManager.update(:handoff_tracking) do |h|
+      h[:memory_updated] = true
+      h
+    end
+    return
+  end
+
+  return unless EDIT_TOOLS.include?(tool_name)
+
+  file_path = tool_input['file_path'] || tool_input[:file_path]
+  return unless file_path
+
+  basename = File.basename(file_path)
+
+  # Check if this edit IS a handoff/memory update
+  if file_path.match?(/SESSION_HANDOFF\.md$/i)
+    StateManager.update(:handoff_tracking) do |h|
+      h[:handoff_updated] = true
+      h
+    end
+    return
+  end
+
+  if file_path.match?(/MEMORY\.md$/i) || file_path.match?(%r{memory/.*\.md$}i) || file_path.match?(%r{\.serena/memories/}i)
+    StateManager.update(:handoff_tracking) do |h|
+      h[:memory_updated] = true
+      h
+    end
+    return
+  end
+
+  # Skip if this is a handoff-related or trivial file
+  return if HANDOFF_FILE_PATTERNS.any? { |p| file_path.match?(p) }
+  return if TRIVIAL_FILE_PATTERNS.any? { |p| file_path.match?(p) }
+
+  # This is a significant edit — track it
+  StateManager.update(:handoff_tracking) do |h|
+    h[:significant_edits] = (h[:significant_edits] || 0) + 1
+    h[:significant_files] ||= []
+    h[:significant_files] << basename unless h[:significant_files].include?(basename)
+    h[:significant_files] = h[:significant_files].last(20) # Cap at 20
+    h
+  end
+rescue StandardError => e
+  warn "⚠️  Handoff tracking error: #{e.message}" if ENV['DEBUG']
+end
+
 # === FEATURE REMINDERS + LOGGING ===
 # Extracted to sanetrack_reminders.rb per Rule #10
 require_relative 'sanetrack_reminders'
@@ -715,6 +791,9 @@ def process_result(tool_name, tool_input, tool_response)
 
     # === DEPLOYMENT SAFETY: Track signing and stapling ===
     track_deployment_actions(tool_name, tool_input, tool_response)
+
+    # === HANDOFF TRACKING: Track significant edits and handoff/memory updates ===
+    track_handoff_status(tool_name, tool_input)
 
     # === RULE #4: Track test/verification commands ===
     track_verification(tool_name, tool_input)

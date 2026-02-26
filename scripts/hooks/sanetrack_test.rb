@@ -375,6 +375,34 @@ module SaneTrackTest
       warn "  FAIL: Zero-result research should be invalidated"
     end
 
+    # === HANDOFF TRACKING TESTS ===
+    warn ''
+    warn 'Testing handoff tracking:'
+
+    # Test: Root MEMORY.md marks memory_updated
+    StateManager.reset(:handoff_tracking)
+    process_result_proc.call('Edit', { 'file_path' => '/tmp/project/MEMORY.md' }, { 'success' => true })
+    handoff = StateManager.get(:handoff_tracking)
+    if handoff[:memory_updated] == true
+      passed += 1
+      warn '  PASS: Root MEMORY.md marks memory_updated'
+    else
+      failed += 1
+      warn "  FAIL: Root MEMORY.md should set memory_updated, got #{handoff.inspect}"
+    end
+
+    # Test: Serena write_memory marks memory_updated (no file_path)
+    StateManager.reset(:handoff_tracking)
+    process_result_proc.call('mcp__serena__write_memory', {}, { 'success' => true })
+    handoff = StateManager.get(:handoff_tracking)
+    if handoff[:memory_updated] == true
+      passed += 1
+      warn '  PASS: Serena write_memory marks memory_updated'
+    else
+      failed += 1
+      warn "  FAIL: Serena write_memory should set memory_updated, got #{handoff.inspect}"
+    end
+
     # === CLEANUP: Reset circuit breaker only (don't reset research - breaks normal ops) ===
     StateManager.reset(:circuit_breaker)
     StateManager.update(:enforcement) { |e| e[:halted] = false; e[:blocks] = []; e }

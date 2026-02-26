@@ -449,6 +449,47 @@ rescue StandardError => e
   warn "⚠️  Validation metrics error: #{e.message}" if ENV['DEBUG']
 end
 
+# === HANDOFF ENFORCEMENT ===
+# Block session end when significant edits were made but SESSION_HANDOFF.md
+# and/or memory files were NOT updated. This prevents stale handoffs.
+
+MIN_EDITS_FOR_HANDOFF = 2  # At least 2 significant edits to trigger
+MIN_FILES_FOR_HANDOFF = 1  # At least 1 significant file to trigger
+
+def check_handoff_required
+  tracking = StateManager.get(:handoff_tracking)
+
+  sig_edits = tracking[:significant_edits] || 0
+  sig_files = tracking[:significant_files] || []
+  handoff_updated = tracking[:handoff_updated] || false
+  memory_updated = tracking[:memory_updated] || false
+
+  # No significant edits = nothing to report
+  return nil if sig_edits < MIN_EDITS_FOR_HANDOFF
+  return nil if sig_files.length < MIN_FILES_FOR_HANDOFF
+
+  # Both updated = good
+  return nil if handoff_updated && memory_updated
+
+  # Build block message
+  missing = []
+  missing << 'SESSION_HANDOFF.md' unless handoff_updated
+  missing << 'memory (MEMORY.md or Serena write_memory)' unless memory_updated
+
+  "   #{sig_edits} significant edit(s) to #{sig_files.length} file(s):\n" \
+  "   #{sig_files.first(10).join(', ')}\n" \
+  "   \n" \
+  "   Missing updates: #{missing.join(' AND ')}\n" \
+  "   \n" \
+  "   What to do:\n" \
+  "   • Update SESSION_HANDOFF.md with what was done + what's pending\n" \
+  "   • Update memory with any reusable learnings or patterns\n" \
+  "   • Both must be updated before the session can end"
+rescue StandardError => e
+  warn "⚠️  Handoff check error: #{e.message}" if ENV['DEBUG']
+  nil  # Don't block on errors in the check itself
+end
+
 # === CHECKS ===
 
 def check_summary_needed
@@ -640,6 +681,22 @@ def process_stop(stop_hook_active, transcript_path = nil)
     warn ''
     warn '  Consider completing these tasks or marking done.'
     warn '---'
+  end
+
+  # === HANDOFF ENFORCEMENT: Significant edits require handoff + memory update ===
+  handoff_block = check_handoff_required
+  if handoff_block
+    warn ''
+    warn '=' * 50
+    warn '🔴 HANDOFF BLOCK: Changes made without updating handoff/memory'
+    warn ''
+    warn handoff_block
+    warn ''
+    warn '   Every significant change must be recorded before session ends.'
+    warn '   Update SESSION_HANDOFF.md and/or memory, then try again.'
+    warn '=' * 50
+    warn ''
+    return 2  # BLOCK — Claude must address this
   end
 
   # === RULE #4 ENFORCEMENT: Edits require verification ===

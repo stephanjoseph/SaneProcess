@@ -1213,16 +1213,20 @@ def test_sanestop
     require_relative '../core/state_manager'
     StateManager.update(:edits) { |e| e[:count] = 1; e[:unique_files] = ['test.rb']; e }
     StateManager.update(:verification) { |v| v[:tests_run] = true; v }
+    StateManager.reset(:handoff_tracking)
     result = t.run_hook({ 'stop_hook_active' => false })
     # Clean up
     StateManager.reset(:edits)
     StateManager.reset(:verification)
+    StateManager.reset(:handoff_tracking)
     result
   end
 
   # Missing stop_hook_active key → defaults to false, runs processing
   t.test(:easy, "missing key: defaults to false", expected_exit: 0,
          expected_not_output: 'BLOCKED') do
+    require_relative '../core/state_manager'
+    StateManager.reset(:handoff_tracking)
     t.run_hook({ 'some_random_key' => 'value' })
   end
 
@@ -1231,6 +1235,8 @@ def test_sanestop
   # Valid JSON with unexpected keys — should not crash
   t.test(:hard, "valid JSON, unexpected keys", expected_exit: 0,
          expected_not_output: 'error') do
+    require_relative '../core/state_manager'
+    StateManager.reset(:handoff_tracking)
     t.run_hook({
       'completely' => 'unexpected',
       'data' => { 'nested' => true },
@@ -1241,6 +1247,8 @@ def test_sanestop
   # Empty JSON object — should handle gracefully
   t.test(:hard, "empty JSON object", expected_exit: 0,
          expected_not_output: 'error') do
+    require_relative '../core/state_manager'
+    StateManager.reset(:handoff_tracking)
     t.run_hook({})
   end
 
@@ -1329,6 +1337,10 @@ def test_integration
 
   # Test 5: Sanestop generates session stats
   warn "\n  [CHAIN] Session lifecycle"
+
+  # Reset handoff tracking so the handoff enforcement doesn't block this integration test
+  require_relative '../core/state_manager'
+  StateManager.reset(:handoff_tracking)
 
   stop_stdout, stop_stderr, stop_status = Open3.capture3(
     { 'CLAUDE_PROJECT_DIR' => PROJECT_DIR, 'TIER_TEST_MODE' => 'true' },

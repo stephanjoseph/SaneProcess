@@ -187,6 +187,16 @@ module StateManager
       sparkle_signed_dmgs: [],    # Filenames signed this session
       staple_verified_dmgs: []    # Filenames verified stapled this session
     },
+    # === HANDOFF TRACKING ===
+    # Ensures SESSION_HANDOFF.md and memory are updated when significant changes are made.
+    # sanetrack.rb sets needs_update when non-trivial files are edited.
+    # sanestop.rb blocks session end if updates are missing.
+    handoff_tracking: {
+      significant_edits: 0,       # Count of non-doc, non-handoff edits
+      significant_files: [],      # Which files triggered the flag
+      handoff_updated: false,     # SESSION_HANDOFF.md was edited this session
+      memory_updated: false       # Any memory file was edited this session
+    },
     # === SKILL ENFORCEMENT ===
     # Tracks when skills should be used and validates they were executed properly
     skill: {

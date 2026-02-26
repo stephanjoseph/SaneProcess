@@ -20,6 +20,7 @@ module SaneStopTest
     StateManager.reset(:edits)
     StateManager.reset(:research)
     StateManager.reset(:circuit_breaker)
+    StateManager.reset(:handoff_tracking)
 
     passed = 0
     failed = 0
@@ -45,6 +46,12 @@ module SaneStopTest
       e
     end
     StateManager.reset(:verification)
+    # Mark handoff as updated so handoff check doesn't interfere with Rule #4 test
+    StateManager.update(:handoff_tracking) do |h|
+      h[:handoff_updated] = true
+      h[:memory_updated] = true
+      h
+    end
 
     original_stderr = $stderr.clone
     $stderr.reopen('/dev/null', 'w')
@@ -87,6 +94,7 @@ module SaneStopTest
       e
     end
     StateManager.reset(:verification)
+    StateManager.reset(:handoff_tracking)
 
     original_stderr = $stderr.clone
     $stderr.reopen('/dev/null', 'w')
@@ -193,6 +201,78 @@ module SaneStopTest
     StateManager.update(:action_log) { |_| [] }
     StateManager.update(:patterns) { |p| p[:session_scores] = []; p }
 
+    # === HANDOFF ENFORCEMENT TESTS ===
+    warn ''
+    warn 'Testing handoff enforcement:'
+
+    # Test: Significant edits without handoff update = BLOCK
+    StateManager.reset(:edits)
+    StateManager.reset(:verification)
+    StateManager.reset(:handoff_tracking)
+    StateManager.update(:handoff_tracking) do |h|
+      h[:significant_edits] = 3
+      h[:significant_files] = ['SKILL.md', 'sanetrack.rb', 'sanestop.rb']
+      h[:handoff_updated] = false
+      h[:memory_updated] = false
+      h
+    end
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_stop_proc.call(false)
+    $stderr.reopen(original_stderr)
+    if exit_code == 2
+      passed += 1
+      warn '  PASS: Significant edits without handoff -> BLOCK (exit 2)'
+    else
+      failed += 1
+      warn "  FAIL: Should block without handoff, got exit #{exit_code}"
+    end
+
+    # Test: Significant edits WITH handoff + memory = allow
+    StateManager.reset(:verification)
+    StateManager.update(:handoff_tracking) do |h|
+      h[:significant_edits] = 3
+      h[:significant_files] = ['SKILL.md', 'sanetrack.rb', 'sanestop.rb']
+      h[:handoff_updated] = true
+      h[:memory_updated] = true
+      h
+    end
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_stop_proc.call(false)
+    $stderr.reopen(original_stderr)
+    if exit_code == 0
+      passed += 1
+      warn '  PASS: Significant edits with handoff + memory -> allow'
+    else
+      failed += 1
+      warn "  FAIL: Should allow with handoff+memory, got exit #{exit_code}"
+    end
+
+    # Test: Few edits (below threshold) without handoff = allow
+    StateManager.reset(:handoff_tracking)
+    StateManager.update(:handoff_tracking) do |h|
+      h[:significant_edits] = 1
+      h[:significant_files] = ['one_file.rb']
+      h[:handoff_updated] = false
+      h[:memory_updated] = false
+      h
+    end
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_stop_proc.call(false)
+    $stderr.reopen(original_stderr)
+    if exit_code == 0
+      passed += 1
+      warn '  PASS: Below-threshold edits without handoff -> allow'
+    else
+      failed += 1
+      warn "  FAIL: Below threshold should allow, got exit #{exit_code}"
+    end
+
+    # Cleanup
+    StateManager.reset(:handoff_tracking)
+
     # === Q4 VALIDATION: SESSION TRACKING TESTS ===
     warn ''
     warn 'Testing validation metrics (Q1/Q4):'
@@ -202,6 +282,7 @@ module SaneStopTest
     StateManager.reset(:edits)
     StateManager.reset(:verification)
     StateManager.reset(:circuit_breaker)
+    StateManager.reset(:handoff_tracking)
     StateManager.update(:enforcement) { |e| e[:blocks] = []; e }
 
     # Test: Session end increments sessions_total
@@ -277,6 +358,7 @@ module SaneStopTest
     # Reset state for integration tests
     StateManager.reset(:edits)
     StateManager.reset(:verification)
+    StateManager.reset(:handoff_tracking)
 
     script_path = File.expand_path('sanestop.rb', __dir__)
 
