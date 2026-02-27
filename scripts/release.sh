@@ -1824,6 +1824,15 @@ check_appstore_gate() {
         return 1
     fi
 
+    if [ -z "${APPSTORE_PRODUCT_ID}" ]; then
+        log_error "APPSTORE_PRODUCT_ID is required for App Store builds to use StoreKit checkout."
+        log_error "Set appstore.product_id in .saneprocess for this project before App Store deployment."
+        log_error "Use direct checkout only for non-App Store builds."
+        return 1
+    fi
+
+    log_info "Using App Store product id: ${APPSTORE_PRODUCT_ID}"
+
     if [ -z "${APPSTORE_CONTACT_EMAIL}" ]; then
         log_error "App Store contact email is missing (appstore.contact.email)."
         return 1
@@ -2505,6 +2514,19 @@ if [ "${APPSTORE_ENABLED}" = "true" ] && [ "${SKIP_APPSTORE}" = false ]; then
     APPSTORE_ARCHIVE="${BUILD_DIR}/${APP_NAME}-AppStore.xcarchive"
     APPSTORE_EXPORT_PATH="${BUILD_DIR}/Export-AppStore"
     mkdir -p "${APPSTORE_EXPORT_PATH}"
+    if [ -n "${APPSTORE_PRODUCT_ID}" ]; then
+        APPSTORE_HAS_PRODUCT_KEY="false"
+        for bf in "${APPSTORE_BUILD_FLAGS[@]}"; do
+            if [[ "${bf}" == INFOPLIST_KEY_AppStoreProductID=* ]]; then
+                APPSTORE_HAS_PRODUCT_KEY="true"
+                break
+            fi
+        done
+
+        if [ "${APPSTORE_HAS_PRODUCT_KEY}" != "true" ]; then
+            APPSTORE_BUILD_FLAGS+=("INFOPLIST_KEY_AppStoreProductID=${APPSTORE_PRODUCT_ID}")
+        fi
+    fi
 
     if [ "${SKIP_BUILD}" = false ]; then
         log_info ""
@@ -3090,6 +3112,9 @@ PY
                       -archivePath "${IOS_ARCHIVE}" \
                       -destination "generic/platform=iOS" \
                       -allowProvisioningUpdates)
+            if [ -n "${APPSTORE_PRODUCT_ID}" ]; then
+                ios_args+=( "INFOPLIST_KEY_AppStoreProductID=${APPSTORE_PRODUCT_ID}" )
+            fi
             if [ ${#XCODE_PROVISIONING_AUTH_ARGS[@]} -gt 0 ]; then
                 ios_args+=("${XCODE_PROVISIONING_AUTH_ARGS[@]}")
             fi
