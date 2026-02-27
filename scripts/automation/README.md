@@ -158,6 +158,33 @@ git-sync-safe.sh --allow-dirty
 5. Flags dirty trees as issues by default (prevents false “clean” states).
 6. Optional peer mode (`--peer <host>`) checks branch/head/dirty parity over SSH.
 
+### sane-status-crossref.sh
+
+One-command cross-reference run for business health (sales, inbox, and GitHub issues).
+
+**Usage:**
+```bash
+sane-status-crossref.sh
+```
+
+**What it does:**
+1. Shows last-30-day LemonSqueezy sales summary.
+2. Shows current inbox status and action-needed threads.
+3. Shows open GitHub issues across core SaneApps repos.
+
+### sane-support-kickoff.sh
+
+Quick support-workflow starter for support triage.
+
+**Usage:**
+```bash
+sane-support-kickoff.sh
+```
+
+**What it does:**
+1. Runs the inbox report.
+2. Reprints `NEEDS REPLY` items for fast intake and prioritization.
+
 ## Models
 
 Default models used:

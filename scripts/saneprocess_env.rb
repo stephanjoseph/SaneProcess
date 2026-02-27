@@ -97,6 +97,7 @@ if appstore
   emit('APPSTORE_ENABLED', fetch_config(config, 'appstore', 'enabled'))
   emit('APPSTORE_APP_ID', fetch_config(config, 'appstore', 'app_id'))
   emit('APPSTORE_PRODUCT_ID', fetch_config(config, 'appstore', 'product_id'))
+  emit('APPSTORE_PRODUCT_ID_REQUIRED', fetch_config(config, 'appstore', 'require_product_id'))
   emit('APPSTORE_PLATFORMS', fetch_config(config, 'appstore', 'platforms'))
   emit('APPSTORE_SCHEME', fetch_config(config, 'appstore', 'scheme'))
   emit('APPSTORE_CONFIGURATION', fetch_config(config, 'appstore', 'configuration'))

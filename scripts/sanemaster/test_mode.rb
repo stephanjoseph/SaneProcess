@@ -413,7 +413,7 @@ module SaneMasterModules
       require 'open3'
 
       cmd = ['xcodebuild', *xcodebuild_container_args, '-scheme', project_scheme, '-configuration', build_config,
-             '-destination', 'platform=macOS', 'build']
+             '-destination', 'platform=macOS', 'ENABLE_DEBUG_DYLIB=NO', 'build']
       stdout, status = Open3.capture2e(*cmd)
 
       summary = stdout.lines.select { |line| line.match?(/BUILD|error:/) }.last(summary_lines)

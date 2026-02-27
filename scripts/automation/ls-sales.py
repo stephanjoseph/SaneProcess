@@ -9,6 +9,7 @@ Usage:
   ls-sales.py --days 7     # Last 7 days
   ls-sales.py --fees       # Fee breakdown only
   ls-sales.py --products   # Revenue by product
+  ls-sales.py --product-variants  # Revenue by product + variant
   ls-sales.py --json       # Raw JSON output (for piping)
 """
 import argparse
@@ -189,6 +190,31 @@ def print_products(orders):
         print(f"{name[:29]:<30} {p['orders']:>7} ${p['revenue']:>9.2f} ${p['fees']:>9.2f} ${net:>9.2f}")
 
 
+def print_product_variants(orders):
+    """Revenue by product + variant."""
+    products = defaultdict(lambda: {"revenue": 0, "orders": 0, "fees": 0})
+
+    for o in orders:
+        a = o["attributes"]
+        item = a.get("first_order_item") or {}
+        product = item.get("product_name", "Unknown")
+        variant = item.get("variant_name") or "Default"
+        key = f"{product} | {variant}"
+        subtotal = a.get("subtotal_usd", 0) / 100
+        fee, _ = calc_fee(subtotal, a.get("currency", "USD"))
+        products[key]["revenue"] += subtotal
+        products[key]["orders"] += 1
+        products[key]["fees"] += fee
+
+    print()
+    print(f"{'Product + Variant':<34} {'Orders':>7} {'Revenue':>10} {'LS Fees':>10} {'You Keep':>10}")
+    print("-" * 76)
+    for key in sorted(products, key=lambda k: products[k]["revenue"], reverse=True):
+        p = products[key]
+        net = p["revenue"] - p["fees"]
+        print(f"{key[:34]:<34} {p['orders']:>7} ${p['revenue']:>9.2f} ${p['fees']:>9.2f} ${net:>9.2f}")
+
+
 def print_daily(all_orders):
     """Today / Yesterday / This Week / All-time breakdown."""
     # Use local time so "today" matches the user's actual day
@@ -284,6 +310,7 @@ def main():
     parser.add_argument("--days", type=int, help="Last N days")
     parser.add_argument("--fees", action="store_true", help="Fee breakdown only")
     parser.add_argument("--products", action="store_true", help="Revenue by product")
+    parser.add_argument("--product-variants", action="store_true", help="Revenue by product + variant")
     parser.add_argument("--json", action="store_true", help="Raw JSON output")
     args = parser.parse_args()
 
@@ -323,6 +350,8 @@ def main():
         print_fees(orders)
     elif args.products:
         print_products(orders)
+    elif args.product_variants:
+        print_product_variants(orders)
     else:
         print_monthly(orders)
         print_fees(orders)

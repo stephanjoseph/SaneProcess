@@ -34,6 +34,12 @@ MLX_LM="$PYTHON -m mlx_lm"
 
 DATE=$(date +"%Y-%m-%d")
 TIMESTAMP=$(date +"%Y-%m-%d %H:%M:%S")
+START_EPOCH=$(date +%s)
+
+# Runtime safety guards for 8GB Mac mini
+# Default: stop training after 210 minutes or when local time reaches 07:00.
+MAX_TRAIN_RUNTIME_MIN="${MAX_TRAIN_RUNTIME_MIN:-210}"
+TRAIN_HARD_STOP_HOUR="${TRAIN_HARD_STOP_HOUR:-7}"
 
 mkdir -p "$OUTPUT_DIR" "$MODELS_DIR/sweeps"
 
@@ -55,6 +61,19 @@ cleanup() {
   rm -f "${RESULTS_FILE:-}"
 }
 trap cleanup EXIT
+
+remaining_budget_seconds() {
+  now=$(date +%s)
+  elapsed=$((now - START_EPOCH))
+  budget=$((MAX_TRAIN_RUNTIME_MIN * 60 - elapsed))
+  echo "$budget"
+}
+
+is_past_hard_stop_hour() {
+  hour_now=$(date +%H)
+  hour_now=$((10#$hour_now))
+  [ "$hour_now" -ge "$TRAIN_HARD_STOP_HOUR" ]
+}
 
 # Check MLX is available
 if [ ! -f "$PYTHON" ]; then
@@ -89,6 +108,7 @@ cat > "$REPORT" <<EOF
 
 Generated at $TIMESTAMP
 Machine: $(hostname) ($(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "Apple Silicon"), $(sysctl -n hw.memsize | awk '{printf "%.0f GB", $1/1073741824}') RAM)
+Runtime guard: max ${MAX_TRAIN_RUNTIME_MIN} minutes, hard stop at ${TRAIN_HARD_STOP_HOUR}:00 local time
 
 ---
 
@@ -165,6 +185,19 @@ SWEEP_ITERS=(1000 2000)
 RESULTS_FILE=$(mktemp)
 
 for ITERS in "${SWEEP_ITERS[@]}"; do
+  if is_past_hard_stop_hour; then
+    echo "" >> "$REPORT"
+    echo "**Stopped before ${ITERS} iterations** — reached hard stop hour (${TRAIN_HARD_STOP_HOUR}:00)." >> "$REPORT"
+    break
+  fi
+
+  BUDGET_SECONDS=$(remaining_budget_seconds)
+  if [ "$BUDGET_SECONDS" -le 0 ]; then
+    echo "" >> "$REPORT"
+    echo "**Stopped before ${ITERS} iterations** — runtime budget exhausted (${MAX_TRAIN_RUNTIME_MIN} min)." >> "$REPORT"
+    break
+  fi
+
   SWEEP_NAME="sweep_${ITERS}_${DATE}"
   ADAPTER_DIR="$MODELS_DIR/sweeps/$SWEEP_NAME"
 
@@ -208,9 +241,37 @@ for ITERS in "${SWEEP_ITERS[@]}"; do
     --steps-per-eval 100 \
     --val-batches 10 \
     --adapter-path "$ADAPTER_DIR" \
-    2>&1 | tee "$ADAPTER_DIR/train.log"
+    > "$ADAPTER_DIR/train.log" 2>&1 &
+  TRAIN_PID=$!
 
-  TRAIN_EXIT=${PIPESTATUS[0]}
+  TRAIN_EXIT=""
+  while kill -0 "$TRAIN_PID" 2>/dev/null; do
+    if is_past_hard_stop_hour; then
+      echo "Stopping training at hard stop hour (${TRAIN_HARD_STOP_HOUR}:00)." >> "$ADAPTER_DIR/train.log"
+      kill -TERM "$TRAIN_PID" 2>/dev/null || true
+      sleep 3
+      kill -KILL "$TRAIN_PID" 2>/dev/null || true
+      TRAIN_EXIT=124
+      break
+    fi
+
+    BUDGET_SECONDS=$(remaining_budget_seconds)
+    if [ "$BUDGET_SECONDS" -le 0 ]; then
+      echo "Stopping training: runtime budget exceeded (${MAX_TRAIN_RUNTIME_MIN} min)." >> "$ADAPTER_DIR/train.log"
+      kill -TERM "$TRAIN_PID" 2>/dev/null || true
+      sleep 3
+      kill -KILL "$TRAIN_PID" 2>/dev/null || true
+      TRAIN_EXIT=124
+      break
+    fi
+
+    sleep 30
+  done
+
+  if [ -z "$TRAIN_EXIT" ]; then
+    wait "$TRAIN_PID"
+    TRAIN_EXIT=$?
+  fi
 
   # Extract key training metrics for report
   grep -E "^Iter|^Saved" "$ADAPTER_DIR/train.log" | tail -10 >> "$REPORT"
@@ -221,6 +282,9 @@ for ITERS in "${SWEEP_ITERS[@]}"; do
 
   if [ $TRAIN_EXIT -ne 0 ]; then
     echo "**FAILED** (exit $TRAIN_EXIT, ${TRAIN_TIME}min)" >> "$REPORT"
+    if [ "$TRAIN_EXIT" -eq 124 ]; then
+      echo "Stopped by runtime guard to protect mini daytime responsiveness." >> "$REPORT"
+    fi
     echo "" >> "$REPORT"
     continue
   fi

@@ -6,8 +6,10 @@ Scripts that run on the Mac mini (M1, 8GB) build server. This is the **source of
 
 | Script | Schedule | Purpose |
 |--------|----------|---------|
-| `mini-train.sh` | 3 AM daily | MLX LoRA fine-tuning pipeline (sweeps, validation, reporting) |
-| `mini-train-all.sh` | 3 AM daily | Wrapper that calls mini-train.sh for SaneAI |
+| `mini-memory-guard.sh` | 5:40 AM daily | Mini hygiene + safe reboot gate (only when idle and needed) |
+| `mini-install-memory-guard.sh` | On demand | Installs/updates memory guard LaunchAgent |
+| `mini-train.sh` | 3 AM Sunday | MLX LoRA fine-tuning pipeline (sweeps, validation, reporting) |
+| `mini-train-all.sh` | 3 AM Sunday | Wrapper that calls mini-train.sh for SaneAI |
 | `mini-nightly.sh` | 2 AM daily | Nightly builds + tests for all SaneApps repos |
 
 ## Deploying
@@ -23,7 +25,7 @@ scp scripts/mini/mini-train.sh mini:~/SaneApps/infra/scripts/
 ## Architecture
 
 ```
-LaunchAgent (3 AM)
+LaunchAgent (3 AM Sunday)
   → mini-train-all.sh
     → merge_training_data.py (if exists)
     → mini-train.sh SaneAI
@@ -39,6 +41,11 @@ LaunchAgent (2 AM)
     → xcodebuild (build + test each app)
     → System health (disk, memory, uptime)
     → Report → ~/SaneApps/outputs/nightly_report.md
+
+LaunchAgent (5:40 AM)
+  → mini-memory-guard.sh
+    → health snapshot + stale-process cleanup
+    → optional reboot only in safe window and only when mini is idle
 ```
 
 ## Key Details
@@ -51,8 +58,9 @@ LaunchAgent (2 AM)
 ## LaunchAgents (on mini)
 
 ```
-~/Library/LaunchAgents/com.saneapps.training.plist  → mini-train-all.sh (3 AM)
+~/Library/LaunchAgents/com.saneapps.training.plist  → mini-train-all.sh (3 AM Sunday)
 ~/Library/LaunchAgents/com.saneapps.nightly.plist   → mini-nightly.sh (2 AM)
+~/Library/LaunchAgents/com.saneapps.memory-guard.plist → mini-memory-guard.sh (5:40 AM)
 ```
 
 ## Outputs (on mini)

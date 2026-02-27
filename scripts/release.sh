@@ -809,8 +809,16 @@ print_help() {
     echo "Options:"
     echo "  --project PATH      Project root (defaults to current directory)"
     echo "  --config PATH       Config file (defaults to <project>/.saneprocess if present)"
-    echo "  --full              Version bump, tests, git commit (no GitHub release publishing)"
+    echo "  --full              Version bump, tests, git commit"
     echo "  --deploy            Upload to R2, update appcast, deploy website (run after build)"
+    echo "  --github-release    Create/update GitHub release (uploads ZIP for approved apps only)"
+    echo "  --critical-update   Mark appcast entry as critical update"
+    echo "  --minimum-autoupdate-version BUILD"
+    echo "                      Set <sparkle:minimumAutoupdateVersion> (CFBundleVersion)"
+    echo "  --critical-below-version BUILD"
+    echo "                      Only mark update critical for hosts below this CFBundleVersion"
+    echo "  --keep-github-binaries"
+    echo "                      Do not purge old GitHub release binary assets"
     echo "  --skip-notarize      Skip notarization (for local testing)"
     echo "  --skip-build         Skip build step (use existing archive)"
     echo "  --version X.Y.Z      Set version number"
@@ -1227,13 +1235,165 @@ commit_version_bump() {
 }
 
 create_github_release() {
-    log_warn "Skipping GitHub release creation (policy: no release publishing on GitHub)."
+    if ! command -v gh >/dev/null 2>&1; then
+        log_warn "gh CLI not installed — skipping GitHub release creation."
+        return 0
+    fi
+
+    if [ -z "${GITHUB_REPO}" ]; then
+        log_warn "GITHUB_REPO is empty — skipping GitHub release creation."
+        return 0
+    fi
+
+    local tag="v${VERSION}"
+    local title="${APP_NAME} ${VERSION}"
+    local notes_file="${BUILD_DIR}/github-release-notes-${VERSION}.md"
+    cat > "${notes_file}" <<EOF
+## ${APP_NAME} ${VERSION}
+
+${RELEASE_NOTES:-Release ${VERSION}}
+
+Distribution:
+- Sparkle appcast: https://${SITE_HOST}/appcast.xml
+- Direct download: https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip
+EOF
+
+    if gh release view "${tag}" --repo "${GITHUB_REPO}" >/dev/null 2>&1; then
+        if gh release edit "${tag}" \
+            --repo "${GITHUB_REPO}" \
+            --title "${title}" \
+            --notes-file "${notes_file}" >/dev/null 2>&1; then
+            log_info "GitHub release updated: ${GITHUB_REPO}@${tag}"
+        else
+            log_warn "Failed to edit GitHub release ${GITHUB_REPO}@${tag} (non-fatal)."
+        fi
+    else
+        local target_commit
+        target_commit=$(git -C "${PROJECT_ROOT}" rev-parse HEAD 2>/dev/null || echo "")
+        if gh release create "${tag}" \
+            --repo "${GITHUB_REPO}" \
+            --title "${title}" \
+            --notes-file "${notes_file}" \
+            ${target_commit:+--target "${target_commit}"} >/dev/null 2>&1; then
+            log_info "GitHub release created: ${GITHUB_REPO}@${tag}"
+        else
+            log_warn "Failed to create GitHub release ${GITHUB_REPO}@${tag} (non-fatal)."
+        fi
+    fi
+
     return 0
 }
 
 upload_github_release_asset() {
-    log_warn "Skipping GitHub release asset upload (policy: no binary distribution on GitHub)."
+    if [ "${PUBLIC_CHANNEL_APPROVED}" != true ]; then
+        log_warn "Skipping GitHub binary upload: ${APP_NAME} is not in PUBLIC_CHANNEL_ALLOWLIST."
+        return 0
+    fi
+
+    if ! command -v gh >/dev/null 2>&1; then
+        log_warn "gh CLI not installed — skipping GitHub binary upload."
+        return 0
+    fi
+
+    if [ -z "${GITHUB_REPO}" ]; then
+        log_warn "GITHUB_REPO is empty — skipping GitHub binary upload."
+        return 0
+    fi
+
+    if [ ! -f "${FINAL_ZIP}" ]; then
+        log_warn "Release ZIP not found at ${FINAL_ZIP} — skipping GitHub binary upload."
+        return 0
+    fi
+
+    local tag="v${VERSION}"
+    local asset_name
+    asset_name="$(basename "${FINAL_ZIP}")"
+
+    if ! gh release view "${tag}" --repo "${GITHUB_REPO}" >/dev/null 2>&1; then
+        log_warn "GitHub release ${GITHUB_REPO}@${tag} does not exist yet. Skipping binary upload."
+        return 0
+    fi
+
+    if gh release upload "${tag}" "${FINAL_ZIP}" --repo "${GITHUB_REPO}" --clobber >/dev/null 2>&1; then
+        log_info "Uploaded GitHub release asset: ${tag}/${asset_name}"
+    else
+        log_warn "Failed to upload GitHub release asset ${tag}/${asset_name} (non-fatal)."
+    fi
+
     return 0
+}
+
+purge_github_binary_assets() {
+    if [ "${PURGE_GITHUB_BINARY_ASSETS}" != true ]; then
+        return 0
+    fi
+
+    if ! command -v gh >/dev/null 2>&1; then
+        log_warn "gh CLI not installed — skipping GitHub binary purge."
+        return 0
+    fi
+
+    if [ -z "${GITHUB_REPO}" ]; then
+        log_warn "GITHUB_REPO is empty — skipping GitHub binary purge."
+        return 0
+    fi
+
+    local tags
+    tags=$(gh release list --repo "${GITHUB_REPO}" --limit 200 --json tagName --jq '.[].tagName' 2>/dev/null || true)
+    if [ -z "${tags}" ]; then
+        log_info "No GitHub releases found for binary purge."
+        return 0
+    fi
+
+    local deleted=0
+    local failed=0
+    local keep_zip="${APP_NAME}-${VERSION}.zip"
+    local keep_dmg="${APP_NAME}-${VERSION}.dmg"
+    while IFS= read -r tag; do
+        [ -n "${tag}" ] || continue
+        local assets
+        assets=$(gh release view "${tag}" --repo "${GITHUB_REPO}" --json assets --jq '.assets[].name' 2>/dev/null || true)
+        [ -n "${assets}" ] || continue
+
+        while IFS= read -r asset; do
+            [ -n "${asset}" ] || continue
+            case "${asset}" in
+                "${keep_zip}"|"${keep_dmg}")
+                    continue
+                    ;;
+                "${APP_NAME}-"*.zip|"${APP_NAME}-"*.dmg)
+                    if gh release delete-asset "${tag}" "${asset}" --repo "${GITHUB_REPO}" -y >/dev/null 2>&1; then
+                        log_info "Removed GitHub binary asset ${tag}/${asset}"
+                        deleted=$((deleted + 1))
+                    else
+                        log_warn "Failed to remove GitHub binary asset ${tag}/${asset}"
+                        failed=$((failed + 1))
+                    fi
+                    ;;
+            esac
+        done <<< "${assets}"
+    done <<< "${tags}"
+
+    log_info "GitHub binary asset purge summary: deleted=${deleted}, failed=${failed}"
+    return 0
+}
+
+build_optional_appcast_fields() {
+    local lines=""
+
+    if [ -n "${MIN_AUTOUPDATE_VERSION}" ]; then
+        lines="${lines}            <sparkle:minimumAutoupdateVersion>${MIN_AUTOUPDATE_VERSION}</sparkle:minimumAutoupdateVersion>\n"
+    fi
+
+    if [ "${CRITICAL_UPDATE}" = true ]; then
+        if [ -n "${CRITICAL_UPDATE_BELOW_VERSION}" ]; then
+            lines="${lines}            <sparkle:criticalUpdate sparkle:version=\"${CRITICAL_UPDATE_BELOW_VERSION}\"/>\n"
+        else
+            lines="${lines}            <sparkle:criticalUpdate/>\n"
+        fi
+    fi
+
+    printf '%b' "${lines}"
 }
 
 write_export_options_plist() {
@@ -1825,13 +1985,28 @@ check_appstore_gate() {
     fi
 
     if [ -z "${APPSTORE_PRODUCT_ID}" ]; then
-        log_error "APPSTORE_PRODUCT_ID is required for App Store builds to use StoreKit checkout."
-        log_error "Set appstore.product_id in .saneprocess for this project before App Store deployment."
-        log_error "Use direct checkout only for non-App Store builds."
-        return 1
-    fi
+        local product_id_required
+        product_id_required="${APPSTORE_PRODUCT_ID_REQUIRED:-false}"
 
-    log_info "Using App Store product id: ${APPSTORE_PRODUCT_ID}"
+        if [ "${product_id_required}" = "true" ]; then
+            log_error "APPSTORE_PRODUCT_ID is required for App Store builds to use StoreKit checkout."
+            log_error "Set appstore.product_id in .saneprocess for this project before App Store deployment."
+            log_error "Set appstore.require_product_id: false to force direct checkout fallback."
+            return 1
+        fi
+
+        log_warn "APPSTORE_PRODUCT_ID is not set."
+        log_warn "This build will use direct checkout fallback at runtime when APP_STORE is enabled and AppStoreProductID is missing."
+        log_warn "Set appstore.product_id or appstore.require_product_id: true when StoreKit in-app checkout is mandatory."
+    else
+        if ! [[ "${APPSTORE_PRODUCT_ID}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            log_error "APPSTORE_PRODUCT_ID has invalid characters: ${APPSTORE_PRODUCT_ID}"
+            log_error "Allowed characters are A-Z a-z 0-9 . _ -"
+            return 1
+        fi
+
+        log_info "Using App Store product id: ${APPSTORE_PRODUCT_ID}"
+    fi
 
     if [ -z "${APPSTORE_CONTACT_EMAIL}" ]; then
         log_error "App Store contact email is missing (appstore.contact.email)."
@@ -1959,6 +2134,10 @@ RUN_GH_RELEASE=false
 RUN_DEPLOY=false
 WEBSITE_ONLY=false
 ALLOW_REPUBLISH=false
+CRITICAL_UPDATE=false
+MIN_AUTOUPDATE_VERSION=""
+CRITICAL_UPDATE_BELOW_VERSION=""
+PURGE_GITHUB_BINARY_ASSETS=true
 ALLOW_UNSYNCED_PEER=false
 SKIP_APPSTORE=false
 PREFLIGHT_ONLY=false
@@ -2015,6 +2194,26 @@ while [[ $# -gt 0 ]]; do
             RUN_DEPLOY=true
             shift
             ;;
+        --github-release)
+            RUN_GH_RELEASE=true
+            shift
+            ;;
+        --critical-update)
+            CRITICAL_UPDATE=true
+            shift
+            ;;
+        --minimum-autoupdate-version)
+            MIN_AUTOUPDATE_VERSION="$2"
+            shift 2
+            ;;
+        --critical-below-version)
+            CRITICAL_UPDATE_BELOW_VERSION="$2"
+            shift 2
+            ;;
+        --keep-github-binaries)
+            PURGE_GITHUB_BINARY_ASSETS=false
+            shift
+            ;;
         --website-only)
             WEBSITE_ONLY=true
             shift
@@ -2038,6 +2237,10 @@ if [ -z "${PROJECT_ROOT}" ]; then
     PROJECT_ROOT="$(pwd)"
 fi
 PROJECT_ROOT="$(cd "${PROJECT_ROOT}" && pwd)"
+
+if [ -n "${CRITICAL_UPDATE_BELOW_VERSION}" ] && [ "${CRITICAL_UPDATE}" != true ]; then
+    CRITICAL_UPDATE=true
+fi
 
 if [ -z "${CONFIG_PATH}" ] && [ -f "${PROJECT_ROOT}/.saneprocess" ]; then
     CONFIG_PATH="${PROJECT_ROOT}/.saneprocess"
@@ -2094,6 +2297,7 @@ ASC_AUTH_KEY_ID="${ASC_AUTH_KEY_ID:-S34998ZCRT}"
 ASC_AUTH_ISSUER_ID="${ASC_AUTH_ISSUER_ID:-c98b1e0a-8d10-4fce-a417-536b31c09bfb}"
 GITHUB_REPO="${GITHUB_REPO:-sane-apps/${APP_NAME}}"
 HOMEBREW_TAP_REPO="${HOMEBREW_TAP_REPO:-sane-apps/homebrew-tap}"
+PUBLIC_CHANNEL_ALLOWLIST="${PUBLIC_CHANNEL_ALLOWLIST:-SaneBar,SaneClip}"
 XCODEGEN="${XCODEGEN:-false}"
 DMG_WINDOW_POS="${DMG_WINDOW_POS:-200 120}"
 DMG_WINDOW_SIZE="${DMG_WINDOW_SIZE:-800 400}"
@@ -2107,6 +2311,32 @@ RELEASE_RECONCILE_ENABLED="${RELEASE_RECONCILE_ENABLED:-true}"
 RELEASE_PEER_HOST="${RELEASE_PEER_HOST:-}"
 RELEASE_PEER_REPO_PATH="${RELEASE_PEER_REPO_PATH:-}"
 RELEASE_PEER_BRANCH="${RELEASE_PEER_BRANCH:-main}"
+
+PUBLIC_CHANNEL_APPROVED=false
+IFS=',' read -r -a PUBLIC_CHANNEL_APPS <<< "${PUBLIC_CHANNEL_ALLOWLIST}"
+for approved_app in "${PUBLIC_CHANNEL_APPS[@]}"; do
+    approved_app="$(echo "${approved_app}" | tr -d '[:space:]')"
+    if [ "${approved_app}" = "${APP_NAME}" ]; then
+        PUBLIC_CHANNEL_APPROVED=true
+        break
+    fi
+done
+
+if [ "${PUBLIC_CHANNEL_APPROVED}" != true ]; then
+    if [ "${RUN_GH_RELEASE}" = true ]; then
+        log_warn "GitHub release metadata disabled: ${APP_NAME} is not in PUBLIC_CHANNEL_ALLOWLIST (${PUBLIC_CHANNEL_ALLOWLIST})"
+        RUN_GH_RELEASE=false
+    fi
+    if [ -n "${HOMEBREW_TAP_REPO}" ]; then
+        log_warn "Homebrew cask publish disabled: ${APP_NAME} is not in PUBLIC_CHANNEL_ALLOWLIST (${PUBLIC_CHANNEL_ALLOWLIST})"
+        HOMEBREW_TAP_REPO=""
+    fi
+fi
+
+if [ "${CRITICAL_UPDATE}" = true ] && [ -z "${MIN_AUTOUPDATE_VERSION}" ]; then
+    log_warn "CRITICAL_UPDATE enabled without MIN_AUTOUPDATE_VERSION."
+    log_warn "Set --minimum-autoupdate-version to force major-upgrade prompts for old builds."
+fi
 
 WORKSPACE="${WORKSPACE:-}"
 XCODEPROJ="${XCODEPROJ:-}"
@@ -2353,7 +2583,6 @@ if [ "${FULL_RELEASE}" = true ]; then
     fi
 
     commit_version_bump
-    RUN_GH_RELEASE=false
 fi
 
 # Clean up previous builds (skip if reusing existing archive)
@@ -2761,13 +2990,14 @@ if [ "${USE_SPARKLE}" = true ] && command -v swift >/dev/null 2>&1; then
             DATE=$(date +"%a, %d %b %Y %H:%M:%S %z")
 
             FORMATTED_NOTES=$(format_appcast_notes "${RELEASE_NOTES}" "${VERSION}")
+            OPTIONAL_SPARKLE_FIELDS=$(build_optional_appcast_fields)
             echo -e "${GREEN}Sparkle AppCast Item:${NC}"
             cat <<EOF
         <item>
             <title>${VERSION}</title>
             <pubDate>${DATE}</pubDate>
             <sparkle:minimumSystemVersion>${MIN_SYSTEM_VERSION}</sparkle:minimumSystemVersion>
-            <description>
+${OPTIONAL_SPARKLE_FIELDS}            <description>
                 <![CDATA[
                 ${FORMATTED_NOTES}
                 ]]>
@@ -2883,28 +3113,53 @@ if [ "${RUN_DEPLOY}" = true ]; then
     CF_ACCOUNT_ID="${CF_ACCOUNT_ID:-2c267ab06352ba2522114c3081a8c5fa}"
 
     if [ -n "${CF_TOKEN}" ]; then
-        # List all objects in bucket via CF API, filter to this app's old versions.
-        # Single-quoted -c string avoids bash expansion of != and other specials.
-        # App name and version passed via sys.argv; JSON piped via stdin.
         R2_API_URL="https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/r2/buckets/${R2_BUCKET}/objects"
-        OLD_KEYS=$(curl -s "${R2_API_URL}" -H "Authorization: Bearer ${CF_TOKEN}" \
-            | python3 -c '
-import sys, json
-app_name, version = sys.argv[1], sys.argv[2]
-keep = f"updates/{app_name}-{version}.zip"
-legacy_keep = f"{app_name}-{version}.zip"
+        OLD_KEYS=$(CF_TOKEN="${CF_TOKEN}" R2_API_URL="${R2_API_URL}" APP_NAME="${APP_NAME}" VERSION="${VERSION}" python3 - <<'PY' 2>/dev/null || true
+import json
+import os
+import urllib.parse
+import urllib.request
+
+token = os.environ.get("CF_TOKEN", "")
+api_url = os.environ.get("R2_API_URL", "")
+app_name = os.environ.get("APP_NAME", "")
+version = os.environ.get("VERSION", "")
+
+if not token or not api_url or not app_name or not version:
+    raise SystemExit(0)
+
+keep = {f"updates/{app_name}-{version}.zip", f"{app_name}-{version}.zip"}
 prefixes = (f"updates/{app_name}-", f"{app_name}-")
-data = json.load(sys.stdin)
-for obj in data.get("result", []):
-    key = obj.get("key", "")
-    if any(key.startswith(p) for p in prefixes) and key not in (keep, legacy_keep):
-        print(key)
-' "${APP_NAME}" "${VERSION}" 2>/dev/null)
+cursor = None
+
+while True:
+    request_url = api_url
+    if cursor:
+        request_url += "?cursor=" + urllib.parse.quote(cursor, safe="")
+
+    req = urllib.request.Request(
+        request_url,
+        headers={"Authorization": f"Bearer {token}"},
+        method="GET",
+    )
+    with urllib.request.urlopen(req, timeout=20) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+
+    for obj in payload.get("result", []):
+        key = obj.get("key", "")
+        if any(key.startswith(prefix) for prefix in prefixes) and key not in keep:
+            print(key)
+
+    cursor = (payload.get("result_info") or {}).get("cursor")
+    if not cursor:
+        break
+PY
+)
 
         OLD_COUNT=0
         if [ -n "${OLD_KEYS}" ]; then
             while IFS= read -r OLD_KEY; do
-                ENCODED_KEY=$(python3 -c "from urllib.parse import quote; print(quote('${OLD_KEY}', safe=''))")
+                ENCODED_KEY=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "${OLD_KEY}")
                 DEL_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
                     "${R2_API_URL}/${ENCODED_KEY}" \
                     -H "Authorization: Bearer ${CF_TOKEN}")
@@ -2924,6 +3179,9 @@ for obj in data.get("result", []):
         log_warn "Old versions may accumulate. Set 'cloudflare' keychain entry or CLOUDFLARE_API_TOKEN env var."
     fi
 
+    # Step 1c: Remove legacy GitHub binary assets (if any)
+    purge_github_binary_assets
+
     # Step 2: Update appcast.xml
     if [ "${USE_SPARKLE}" = true ] && [ -n "${SIGNATURE}" ] && [ "${SIGNATURE}" != "UNSIGNED" ]; then
         APPCAST_PATH="${PROJECT_ROOT}/docs/appcast.xml"
@@ -2932,12 +3190,13 @@ for obj in data.get("result", []):
             PUB_DATE=$(date -R)
 
             FORMATTED_NOTES=$(format_appcast_notes "${RELEASE_NOTES}" "${VERSION}")
+            OPTIONAL_SPARKLE_FIELDS=$(build_optional_appcast_fields)
             NEW_ITEM=$(cat <<APPCASTEOF
         <item>
             <title>${VERSION}</title>
             <pubDate>${PUB_DATE}</pubDate>
             <sparkle:minimumSystemVersion>${MIN_SYSTEM_VERSION}</sparkle:minimumSystemVersion>
-            <description>
+${OPTIONAL_SPARKLE_FIELDS}            <description>
                 <![CDATA[
                 ${FORMATTED_NOTES}
                 ]]>

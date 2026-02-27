@@ -17,6 +17,7 @@
 require 'open3'
 require 'fileutils'
 require 'tmpdir'
+require 'shellwords'
 
 APPS = {
   'SaneBar' => {
@@ -126,6 +127,14 @@ class SaneTest
     [@config[:dev], @config[:prod]].uniq
   end
 
+  def remote_runtime_bundle_id
+    cmd = %(APP="$HOME/Applications/#{@app_name}.app/Contents/Info.plist"; /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP" 2>/dev/null)
+    bid = ssh_capture(cmd).strip
+    return bid if bid.match?(/\A[a-zA-Z0-9.\-]+\z/)
+
+    @config[:prod]
+  end
+
   # ── Remote (Mac mini) workflow ──────────────────────────────
 
   def run_remote
@@ -138,6 +147,8 @@ class SaneTest
     step("#{n += 1}. Fresh reset (mini)") { fresh_reset_remote } if @fresh
     step("#{n += 1}. Reset TCC permissions (mini)") { reset_tcc_remote } if @reset_tcc && !@fresh
     step("#{n += 1}. Set license mode (mini)") { set_license_mode_remote } if (@free_mode || @pro_mode) && !@fresh
+    step("#{n += 1}. Dedupe Accessibility entries (mini)") { dedupe_accessibility_entries_remote }
+    step("#{n += 1}. Repair stale Accessibility trust (mini)") { reconcile_accessibility_trust_remote }
     step("#{n += 1}. Launch on mini") { launch_remote }
     stream_logs_remote unless @no_logs
   end
@@ -177,11 +188,13 @@ class SaneTest
   end
 
   def reset_tcc_remote
-    bundle_ids.each do |bid|
-      ssh("tccutil reset All #{bid} 2>/dev/null; true")
-      ssh("tccutil reset Accessibility #{bid} 2>/dev/null; true")
+    bids = [remote_runtime_bundle_id].compact.uniq
+    bids.each do |bid|
+      escaped_bid = Shellwords.escape(bid)
+      ssh("tccutil reset All #{escaped_bid} 2>/dev/null; true")
+      ssh("tccutil reset Accessibility #{escaped_bid} 2>/dev/null; true")
     end
-    warn "   Reset TCC for: #{bundle_ids.join(', ')}"
+    warn "   Reset TCC for: #{bids.join(', ')}"
   end
 
   def fresh_reset_remote
@@ -190,19 +203,25 @@ class SaneTest
     # Wipe UserDefaults for ALL bundle IDs (dev + prod) and flush preferences cache
     bundle_ids.each do |b|
       ssh("defaults delete #{b} 2>/dev/null; true")
+      ssh("rm -f \"$HOME/Library/Preferences/#{b}.plist\" 2>/dev/null; true")
+      ssh("rm -f \"$HOME/Library/Containers/#{b}/Data/Library/Preferences/#{b}.plist\" 2>/dev/null; true")
     end
     ssh("killall cfprefsd 2>/dev/null; true")
-    # Reset TCC/Accessibility
-    bundle_ids.each do |b|
-      ssh("tccutil reset All #{b} 2>/dev/null; true")
+    # Reset TCC/Accessibility for the actual runtime bundle only
+    runtime_bids = [remote_runtime_bundle_id].compact.uniq
+    runtime_bids.each do |b|
+      escaped_b = Shellwords.escape(b)
+      ssh("tccutil reset All #{escaped_b} 2>/dev/null; true")
     end
     # Clear license keychain entries for ALL bundle IDs
-    bundle_ids.each do |b|
+    runtime_bids.each do |b|
+      escaped_b = Shellwords.escape(b)
       LICENSE_KEYCHAIN_KEYS.each do |key|
-        ssh("security delete-generic-password -s #{b} -a #{key} 2>/dev/null; true")
+        escaped_key = Shellwords.escape(key)
+        ssh("security delete-generic-password -s #{escaped_b} -a #{escaped_key} 2>/dev/null; true")
       end
     end
-    warn "   Wiped App Support, UserDefaults, TCC, license for #{bundle_ids.join(', ')}"
+    warn "   Wiped App Support, UserDefaults, TCC, license for #{runtime_bids.join(', ')}"
   end
 
   def fresh_reset_local
@@ -212,6 +231,10 @@ class SaneTest
     # Wipe UserDefaults for ALL bundle IDs (dev + prod) and flush preferences cache
     bundle_ids.each do |b|
       system('defaults', 'delete', b, err: File::NULL, out: File::NULL)
+      prefs_file = File.expand_path("~/Library/Preferences/#{b}.plist")
+      FileUtils.rm_f(prefs_file) if File.exist?(prefs_file)
+      container_prefs = File.expand_path("~/Library/Containers/#{b}/Data/Library/Preferences/#{b}.plist")
+      FileUtils.rm_f(container_prefs) if File.exist?(container_prefs)
     end
     system('killall', 'cfprefsd', err: File::NULL, out: File::NULL)
     # Reset TCC/Accessibility
@@ -247,6 +270,84 @@ class SaneTest
     end
   end
 
+  def dedupe_accessibility_entries_remote
+    runtime_bid = remote_runtime_bundle_id
+    other_bids = bundle_ids.reject { |bid| bid == runtime_bid }
+    return if other_bids.empty?
+
+    other_bids.each do |bid|
+      escaped_bid = Shellwords.escape(bid)
+      ssh("tccutil reset Accessibility #{escaped_bid} 2>/dev/null; true")
+    end
+
+    warn "   Dedupe: reset Accessibility for #{other_bids.join(', ')} (running #{runtime_bid})"
+  end
+
+  def reconcile_accessibility_trust_remote
+    app_path = "#{MINI_APPS_DIR}/#{@app_name}.app"
+    info_plist = "#{app_path}/Contents/Info.plist"
+    bundle_id = ssh_capture("/usr/libexec/PlistBuddy -c \"Print :CFBundleIdentifier\" #{Shellwords.escape(info_plist)} 2>/dev/null").strip
+    return unless bundle_id.match?(/\A[a-zA-Z0-9.\-]+\z/)
+
+    escaped_bundle = bundle_id.gsub("'", "''")
+    dbs = [
+      '$HOME/Library/Application Support/com.apple.TCC/TCC.db',
+      '/Library/Application Support/com.apple.TCC/TCC.db'
+    ]
+
+    stale_detected = false
+
+    dbs.each do |db|
+      db_exists = ssh_capture("[ -f \"#{db}\" ] && echo yes || echo no").strip
+      next unless db_exists == 'yes'
+
+      sql = "SELECT rowid || '|' || IFNULL(hex(csreq), '') FROM access WHERE service='kTCCServiceAccessibility' AND client='#{escaped_bundle}';"
+      rows_raw = ssh_capture("sqlite3 #{Shellwords.escape(db)} #{Shellwords.escape(sql)}").strip
+      next if rows_raw.empty?
+
+      rows_raw.each_line do |line|
+        row = line.strip
+        next if row.empty?
+
+        _, csreq_hex = row.split('|', 2)
+
+        if csreq_hex.nil? || csreq_hex.empty?
+          stale_detected = true
+          break
+        end
+
+        csreq_path = File.join(Dir.tmpdir, "saneapps-ax-remote-#{@app_name}-#{Process.pid}-#{Time.now.to_i}.csreq")
+        begin
+          File.binwrite(csreq_path, [csreq_hex].pack('H*'))
+          requirement = `csreq -r "#{csreq_path}" -t 2>/dev/null`.strip
+          if requirement.empty?
+            stale_detected = true
+            break
+          end
+
+          remote_requirement = Shellwords.escape(requirement)
+          remote_app = Shellwords.escape("#{MINI_APPS_DIR}/#{@app_name}.app")
+          matches = system('ssh', MINI_HOST, "codesign -R #{remote_requirement} #{remote_app}",
+                           out: File::NULL, err: File::NULL)
+          unless matches
+            stale_detected = true
+            break
+          end
+        ensure
+          FileUtils.rm_f(csreq_path)
+        end
+      end
+
+      break if stale_detected
+    end
+
+    return unless stale_detected
+
+    warn "   Repair: stale Accessibility trust detected for #{bundle_id}; resetting Accessibility grant"
+    ssh("tccutil reset Accessibility #{bundle_id} 2>/dev/null; true")
+    ssh("killall tccd 2>/dev/null; true")
+  end
+
   def deploy_to_mini
     dd_app = find_derived_data_app
     abort '   ❌ Built app not found in DerivedData' unless dd_app
@@ -263,11 +364,13 @@ class SaneTest
   end
 
   def launch_remote
+    env_args = []
+    env_args += ['--env', 'SANEAPPS_FORCE_LICENSE_CHECK=1'] if @free_mode
     launch_cmd =
       if @allow_keychain
-        "open #{MINI_APPS_DIR}/#{@app_name}.app"
+        "open #{env_args.join(' ')} #{MINI_APPS_DIR}/#{@app_name}.app"
       else
-        "open #{MINI_APPS_DIR}/#{@app_name}.app --args --sane-no-keychain"
+        "open #{env_args.join(' ')} #{MINI_APPS_DIR}/#{@app_name}.app --args --sane-no-keychain"
       end
     ssh(launch_cmd)
     sleep 2
@@ -327,10 +430,8 @@ class SaneTest
   end
 
   def dedupe_accessibility_entries_local
-    # Local SaneBar launches use signed ProdDebug with production bundle ID.
-    # If a prior unsigned/dev run granted com.sanebar.dev, System Settings shows
-    # two "SaneBar" entries. Remove the dev Accessibility grant in this case.
-    return unless @app_name == 'SaneBar'
+    # For apps with distinct dev/pro bundle IDs, remove the non-runtime grant
+    # so System Settings doesn't show duplicate entries for the same app.
     return unless @config[:dev] && @config[:prod] && @config[:dev] != @config[:prod]
 
     app_path = find_derived_data_app
@@ -338,10 +439,13 @@ class SaneTest
 
     info_plist = File.join(app_path, 'Contents', 'Info.plist')
     runtime_bundle = `"/usr/libexec/PlistBuddy" -c "Print :CFBundleIdentifier" "#{info_plist}" 2>/dev/null`.strip
-    return unless runtime_bundle == @config[:prod]
+    non_runtime = [@config[:dev], @config[:prod]].uniq.reject { |bid| bid == runtime_bundle }
+    return if non_runtime.empty?
 
-    system('tccutil', 'reset', 'Accessibility', @config[:dev], out: File::NULL, err: File::NULL)
-    warn "   Dedupe: reset Accessibility for #{@config[:dev]} (running #{@config[:prod]})"
+    non_runtime.each do |bid|
+      system('tccutil', 'reset', 'Accessibility', bid, out: File::NULL, err: File::NULL)
+    end
+    warn "   Dedupe: reset Accessibility for #{non_runtime.join(', ')} (running #{runtime_bundle})"
   end
 
   def reconcile_accessibility_trust_local(app_path)
@@ -408,10 +512,12 @@ class SaneTest
     app_path = stage_to_canonical_local_app_path(source_app_path)
     reconcile_accessibility_trust_local(app_path)
 
+    open_args = []
+    open_args += ['--env', 'SANEAPPS_FORCE_LICENSE_CHECK=1'] if @free_mode
     if @allow_keychain
-      system('open', app_path)
+      system('open', *open_args, app_path)
     else
-      system('open', app_path, '--args', '--sane-no-keychain')
+      system('open', *open_args, app_path, '--args', '--sane-no-keychain')
     end
     sleep 2
     pid = `pgrep -x #{@app_name} 2>/dev/null`.strip
@@ -523,17 +629,22 @@ class SaneTest
   end
 
   def set_license_mode_remote
-    bid = @config[:dev]
+    bid = remote_runtime_bundle_id
     if @free_mode
       warn '   Clearing license data on mini (free mode)...'
+      escaped_bid = Shellwords.escape(bid)
       LICENSE_KEYCHAIN_KEYS.each do |key|
-        ssh("security delete-generic-password -s #{bid} -a #{key} 2>/dev/null; true")
+        escaped_key = Shellwords.escape(key)
+        ssh("security delete-generic-password -s #{escaped_bid} -a #{escaped_key} 2>/dev/null; true")
       end
       clear_license_settings_remote
       warn '   License cleared on mini — app will launch as Free user'
     elsif @pro_mode
       warn '   Injecting test license key on mini (pro mode)...'
-      ssh("security add-generic-password -s #{bid} -a #{LICENSE_KEYCHAIN_KEYS[0]} -w #{TEST_LICENSE_KEY} -U 2>/dev/null; true")
+      escaped_bid = Shellwords.escape(bid)
+      escaped_key = Shellwords.escape(LICENSE_KEYCHAIN_KEYS[0])
+      escaped_license = Shellwords.escape(TEST_LICENSE_KEY)
+      ssh("security add-generic-password -s #{escaped_bid} -a #{escaped_key} -w #{escaped_license} -U 2>/dev/null; true")
       warn "   Test key injected on mini — app will attempt validation"
     end
   end
@@ -604,7 +715,8 @@ with open('$SETTINGS', 'w') as f: json.dump(s, f, indent=2)
         'xcodebuild',
         '-scheme', @config[:scheme],
         '-destination', 'platform=macOS',
-        '-configuration', config_name
+        '-configuration', config_name,
+        'ENABLE_DEBUG_DYLIB=NO'
       ]
 
       if has_signing_cert
@@ -643,6 +755,9 @@ with open('$SETTINGS', 'w') as f: json.dump(s, f, indent=2)
         stdout.lines.select { |l| l.match?(/error:|BUILD FAILED/) }.last(5).each { |l| warn "   #{l.rstrip}" }
         abort '   ❌ Build failed'
       end
+
+      built_app = find_derived_data_app
+      assert_runtime_binary!(built_app) if built_app
     end
   end
 
@@ -658,10 +773,33 @@ with open('$SETTINGS', 'w') as f: json.dump(s, f, indent=2)
 
     configs.each do |config|
       pattern = File.expand_path("~/Library/Developer/Xcode/DerivedData/#{@app_name}-*/Build/Products/#{config}/#{@app_name}.app")
-      result = Dir.glob(pattern).max_by { |p| File.mtime(p) }
+      # App bundle directory mtime can stay stale across incremental builds.
+      # Prefer executable mtime to reliably pick the freshest artifact.
+      result = Dir.glob(pattern).max_by { |p| artifact_mtime(p) }
       return result if result
     end
     nil
+  end
+
+  def artifact_mtime(app_bundle_path)
+    executable = File.join(app_bundle_path, 'Contents', 'MacOS', @app_name)
+    return File.mtime(executable) if File.exist?(executable)
+
+    File.mtime(app_bundle_path)
+  rescue StandardError
+    Time.at(0)
+  end
+
+  def assert_runtime_binary!(app_bundle_path)
+    executable = File.join(app_bundle_path, 'Contents', 'MacOS', @app_name)
+    return unless File.exist?(executable)
+
+    header = `strings "#{executable}" 2>/dev/null | head -n 60`
+    return unless header.include?('com.apple.Previews.StubExecutor') ||
+                  header.include?('PreviewsAgentExecutorLibrary')
+
+    abort "   ❌ Build produced Xcode Previews stub executable (#{@app_name}). " \
+          'Use ENABLE_DEBUG_DYLIB=NO for standalone launches.'
   end
 
   def ssh(cmd)
