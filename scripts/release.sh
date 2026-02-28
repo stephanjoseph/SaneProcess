@@ -2067,6 +2067,25 @@ check_version_bump_gate() {
     return 1
 }
 
+app_appears_to_require_storekit_product_gate() {
+    local out=""
+    if command -v rg >/dev/null 2>&1; then
+        out=$(rg -n \
+            --glob '*.swift' \
+            --glob '!build/**' \
+            --glob '!DerivedData/**' \
+            --glob '!**/SourcePackages/**' \
+            "LicenseService\\s*\\(" \
+            "${PROJECT_ROOT}" 2>/dev/null || true)
+    else
+        out=$(find "${PROJECT_ROOT}" \
+            \( -path "*/build/*" -o -path "*/DerivedData/*" -o -path "*/SourcePackages/*" \) -prune -o \
+            -name '*.swift' -print0 2>/dev/null | \
+            xargs -0 grep -n -E "LicenseService[[:space:]]*\\(" 2>/dev/null || true)
+    fi
+    [ -n "${out}" ]
+}
+
 check_appstore_gate() {
     if [ "${APPSTORE_ENABLED}" != "true" ] || [ "${SKIP_APPSTORE}" = true ]; then
         return 0
@@ -2085,6 +2104,13 @@ check_appstore_gate() {
             log_error "APPSTORE_PRODUCT_ID is required for App Store builds to use StoreKit checkout."
             log_error "Set appstore.product_id in .saneprocess for this project before App Store deployment."
             log_error "Set appstore.require_product_id: false to force direct checkout fallback."
+            return 1
+        fi
+
+        if app_appears_to_require_storekit_product_gate; then
+            log_error "APPSTORE_PRODUCT_ID is missing, but StoreKit unlock flow was detected in source."
+            log_error "This can route digital unlocks outside App Store billing in APP_STORE builds."
+            log_error "Set appstore.product_id in .saneprocess before App Store deployment."
             return 1
         fi
 
@@ -2665,12 +2691,22 @@ if [ "${FULL_RELEASE}" = true ]; then
         fi
     fi
 
-    # Gate 3: Open GitHub issues
+    # Gate 3: Open GitHub work queue (issues + PRs)
     if [ -n "${GITHUB_REPO}" ] && command -v gh >/dev/null 2>&1; then
         OPEN_ISSUES=$(gh issue list --repo "${GITHUB_REPO}" --state open --json number 2>/dev/null | \
             python3 -c "import json,sys; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
         if [ "${OPEN_ISSUES}" -gt 0 ] 2>/dev/null; then
             log_warn "${OPEN_ISSUES} open GitHub issue(s) — review before shipping."
+        fi
+
+        OPEN_PRS=$(gh pr list --repo "${GITHUB_REPO}" --state open --json number 2>/dev/null | \
+            python3 -c "import json,sys; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
+        if [ "${OPEN_PRS}" -gt 0 ] 2>/dev/null; then
+            log_warn "${OPEN_PRS} open GitHub PR(s) — review before shipping."
+            log_warn "Open PR list:"
+            gh pr list --repo "${GITHUB_REPO}" --state open --limit 20 2>/dev/null | while IFS= read -r pr; do
+                log_warn "  ${pr}"
+            done
         fi
     fi
 
@@ -2779,7 +2815,10 @@ if [ "${SKIP_BUILD}" = false ]; then
     CURRENT_GATE="Build release archive"
     RELEASE_ERR_GATE_RECORDED=""
 
-    archive_args=(archive -scheme "${SCHEME}" -configuration Release -archivePath "${ARCHIVE_PATH}" -destination "generic/platform=macOS" OTHER_CODE_SIGN_FLAGS="--timestamp")
+    archive_args=(archive -scheme "${SCHEME}" -configuration Release -archivePath "${ARCHIVE_PATH}" -destination "generic/platform=macOS" -allowProvisioningUpdates OTHER_CODE_SIGN_FLAGS="--timestamp")
+    if [ ${#XCODE_PROVISIONING_AUTH_ARGS[@]} -gt 0 ]; then
+        archive_args+=("${XCODE_PROVISIONING_AUTH_ARGS[@]}")
+    fi
     if [ -n "${WORKSPACE}" ]; then
         archive_args=(-workspace "${WORKSPACE}" "${archive_args[@]}")
     elif [ -n "${XCODEPROJ}" ]; then
