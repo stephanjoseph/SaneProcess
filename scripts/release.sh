@@ -367,6 +367,59 @@ print("")
 PY
 }
 
+appcast_enclosure_url_for_version() {
+    local appcast_content="$1"
+    APPCAST_CONTENT="${appcast_content}" python3 - "${VERSION}" "${BUILD_NUMBER}" <<'PY'
+import os
+import re
+import sys
+
+xml = os.environ.get("APPCAST_CONTENT", "")
+version = sys.argv[1]
+build = sys.argv[2]
+
+def matches_item(item: str) -> bool:
+    version_match = False
+    build_match = False
+
+    if version:
+        if f'sparkle:shortVersionString="{version}"' in item:
+            version_match = True
+        elif re.search(rf"<sparkle:shortVersionString>\s*{re.escape(version)}\s*</sparkle:shortVersionString>", item):
+            version_match = True
+
+    if build:
+        if f'sparkle:version="{build}"' in item:
+            build_match = True
+        elif re.search(rf"<sparkle:version>\s*{re.escape(build)}\s*</sparkle:version>", item):
+            build_match = True
+
+    if version and build:
+        return version_match and build_match
+    if version:
+        return version_match
+    if build:
+        return build_match
+    return False
+
+for match in re.finditer(r"<item>.*?</item>", xml, flags=re.S):
+    item = match.group(0)
+    if not matches_item(item):
+        continue
+
+    enclosure = re.search(r"<enclosure\b[^>]*>", item, flags=re.S)
+    if not enclosure:
+        continue
+
+    url_match = re.search(r'url="([^"]+)"', enclosure.group(0))
+    if url_match:
+        print(url_match.group(1))
+        sys.exit(0)
+
+print("")
+PY
+}
+
 prune_existing_appcast_entries() {
     local appcast_path="$1"
     local removed_count
@@ -649,6 +702,19 @@ PY
         appcast_item_count=$(appcast_item_count_for_version "${appcast_content}")
         if [ "${appcast_item_count}" != "1" ]; then
             log_error "Appcast has ${appcast_item_count} entries for v${VERSION} (expected exactly 1)"
+            return 1
+        fi
+
+        local appcast_enclosure_url
+        appcast_enclosure_url=$(appcast_enclosure_url_for_version "${appcast_content}")
+        if [ -z "${appcast_enclosure_url}" ]; then
+            log_error "Appcast entry for v${VERSION} missing enclosure URL"
+            return 1
+        fi
+        if [ "${appcast_enclosure_url}" != "${dist_url}" ]; then
+            log_error "Appcast enclosure URL mismatch for v${VERSION}:"
+            log_error "  appcast: ${appcast_enclosure_url}"
+            log_error "  expected: ${dist_url}"
             return 1
         fi
 
@@ -2588,11 +2654,24 @@ if [ "${APPSTORE_ENABLED}" = "true" ] && [ "${SKIP_APPSTORE}" = false ]; then
     fi
 fi
 
-# Get version from app
-if [ -z "${VERSION}" ]; then
-    VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "${APP_PATH}/Contents/Info.plist" 2>/dev/null || echo "1.0.0")
+# Get version/build from exported app and enforce requested-version consistency.
+APP_VERSION_FROM_PLIST=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "${APP_PATH}/Contents/Info.plist" 2>/dev/null || echo "")
+if [ -z "${APP_VERSION_FROM_PLIST}" ]; then
+    log_error "Could not read CFBundleShortVersionString from exported app at ${APP_PATH}"
+    exit 1
 fi
-BUILD_NUMBER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "${APP_PATH}/Contents/Info.plist" 2>/dev/null || echo "1")
+if [ -z "${VERSION}" ]; then
+    VERSION="${APP_VERSION_FROM_PLIST}"
+elif [ "${VERSION}" != "${APP_VERSION_FROM_PLIST}" ]; then
+    log_error "Requested --version (${VERSION}) does not match exported app version (${APP_VERSION_FROM_PLIST})."
+    log_error "Fix version bump inputs first; refusing to publish mismatched artifact naming/metadata."
+    exit 1
+fi
+BUILD_NUMBER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "${APP_PATH}/Contents/Info.plist" 2>/dev/null || echo "")
+if [ -z "${BUILD_NUMBER}" ]; then
+    log_error "Could not read CFBundleVersion from exported app at ${APP_PATH}"
+    exit 1
+fi
 log_info "Version: ${VERSION} (${BUILD_NUMBER})"
 
 # Package as ZIP (simpler, app icon survives HTTP download, no resource fork issues)
