@@ -131,7 +131,9 @@ SCREENSHOT_VARIANTS = {
     { key: 'ipad', display_type: 'APP_IPAD_PRO_3GEN_129', width: 2048, height: 2732 },
     { key: 'ipad_13', display_type: 'APP_IPAD_PRO_3GEN_129', width: 2048, height: 2732 },
     { key: 'ipad_12.9', display_type: 'APP_IPAD_PRO_3GEN_129', width: 2048, height: 2732 },
-    { key: 'ipad_12_9', display_type: 'APP_IPAD_PRO_3GEN_129', width: 2048, height: 2732 }
+    { key: 'ipad_12_9', display_type: 'APP_IPAD_PRO_3GEN_129', width: 2048, height: 2732 },
+    # watchOS screenshots are uploaded through the iOS listing lane in ASC.
+    { key: 'watch', display_type: 'APP_WATCH_SERIES_7', width: 396, height: 484 }
   ]
 }.freeze
 
@@ -533,6 +535,18 @@ def find_editable_version(app_id, asc_platform, version_string, token)
          "&filter[appStoreState]=PREPARE_FOR_SUBMISSION,REJECTED,DEVELOPER_REJECTED,READY_FOR_REVIEW"
   resp = asc_get(path, token: token)
 
+  return nil unless resp && resp['data']
+
+  resp['data'].find do |v|
+    v.dig('attributes', 'versionString') == version_string
+  end
+end
+
+def find_version_any_state(app_id, asc_platform, version_string, token)
+  path = "/apps/#{app_id}/appStoreVersions" \
+         "?filter[platform]=#{asc_platform}" \
+         "&limit=200"
+  resp = asc_get(path, token: token)
   return nil unless resp && resp['data']
 
   resp['data'].find do |v|
@@ -1512,6 +1526,7 @@ OptionParser.new do |opts|
   opts.on('--project-root PATH', 'Project root directory') { |v| options[:project_root] = v }
   opts.on('--skip-upload', 'Skip binary upload; use existing processed build in ASC') { options[:skip_upload] = true }
   opts.on('--skip-screenshots', 'Skip screenshot upload; use screenshots already present in ASC') { options[:skip_screenshots] = true }
+  opts.on('--screenshots-only', 'Upload screenshots to an existing ASC version (no upload, no build attach, no submission)') { options[:screenshots_only] = true }
   opts.on('--preflight-version-state', 'Check editable ASC version state only (no upload, no submission)') { options[:preflight_version_state] = true }
   opts.on('--test-screenshots', 'Test screenshot resize only (no API calls)') { options[:test_screenshots] = true }
 end.parse!
@@ -1571,6 +1586,52 @@ if options[:preflight_version_state]
     exit 0
   end
   exit 1
+end
+
+if options[:screenshots_only]
+  required = %i[app_id version platform project_root]
+  required.each do |key|
+    unless options[key]
+      log_error "Missing required option: --#{key.to_s.tr('_', '-')}"
+      exit 1
+    end
+  end
+
+  asc_platform = PLATFORM_MAP[options[:platform]]
+  unless asc_platform
+    log_error "Unknown platform: #{options[:platform]} (use macos or ios)"
+    exit 1
+  end
+
+  project_root = options[:project_root]
+  app_id = options[:app_id]
+  version = options[:version]
+
+  config_path = File.join(project_root, '.saneprocess')
+  config = if File.exist?(config_path)
+             YAML.safe_load(File.read(config_path)) || {}
+           else
+             {}
+           end
+
+  token = generate_jwt
+  version_record = find_version_any_state(app_id, asc_platform, version, token)
+  unless version_record
+    log_error "Could not find App Store version #{version} on #{options[:platform]} for app #{app_id}."
+    exit 1
+  end
+  version_id = version_record['id']
+  version_state = version_record.dig('attributes', 'appStoreState')
+  log_info "Uploading screenshots to version #{version} (#{version_state})..."
+
+  if options[:skip_screenshots]
+    log_info 'Skipping screenshot upload (--skip-screenshots).'
+  else
+    upload_screenshots(version_id, asc_platform, project_root, config, token)
+  end
+
+  log_info 'Screenshot-only operation complete.'
+  exit 0
 end
 
 # Validate required options
